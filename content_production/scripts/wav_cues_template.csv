@@ -1,0 +1,4 @@
+start,end,narration,transition,image_relpath
+0,12.5,인트로 구간,fade,images/intro.jpg
+12.5,27.0,첫 번째 벌스,cut,images/verse1.jpg
+27.0,,후렴 구간,fade,images/chorus.jpg

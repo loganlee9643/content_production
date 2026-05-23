@@ -49,7 +49,6 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_stt_tab(), "STT (자막 추출)")
         tabs.addTab(self._build_subtitle_tab(), "자막 (SRT)")
         tabs.addTab(self._build_image_tab(), "씬 배경 이미지")
-        tabs.addTab(self._build_video_production_tab(), "영상 제작")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -445,182 +444,8 @@ class SettingsDialog(QDialog):
         outer.addStretch(1)
         return w
 
-    def _build_video_production_tab(self) -> QWidget:
-        w = QWidget()
-        outer = QVBoxLayout(w)
-        hint = QLabel(
-            "영상 제작 프로젝트에서 사용하는 Veo 및 ElevenLabs 설정입니다. "
-            "Gemini API 키와 대본 모델은 LLM 탭, 이미지 모델은 씬 배경 이미지 탭 설정을 사용합니다."
-        )
-        hint.setWordWrap(True)
-        outer.addWidget(hint)
-
-        form = QFormLayout()
-        self._video_backend_rows: dict[str, list[QWidget]] = {}
-        self._voice_provider_rows: dict[str, list[QWidget]] = {}
-
-        def add_row(label: str, field: QWidget | QHBoxLayout, *, video_backend: str | None = None, voice_provider: str | None = None) -> None:
-            form.addRow(label, field)
-            label_widget = form.labelForField(field)
-            widgets: list[QWidget] = []
-            if label_widget is not None:
-                widgets.append(label_widget)
-            if isinstance(field, QWidget):
-                widgets.append(field)
-            else:
-                for i in range(field.count()):
-                    item = field.itemAt(i)
-                    widget = item.widget() if item is not None else None
-                    if widget is not None:
-                        widgets.append(widget)
-            if video_backend is not None:
-                self._video_backend_rows.setdefault(video_backend, []).extend(widgets)
-            if voice_provider is not None:
-                self._voice_provider_rows.setdefault(voice_provider, []).extend(widgets)
-
-        self._combo_video_backend = QComboBox()
-        self._combo_video_backend.addItem("Veo", "veo")
-        self._combo_video_backend.addItem("ComfyUI Wan", "comfyui_wan")
-        self._combo_video_backend.addItem("Kling API", "kling_api")
-        self._combo_video_backend.currentIndexChanged.connect(self._sync_video_production_setting_visibility)
-        add_row("영상 생성 방식", self._combo_video_backend)
-
-        self._edit_veo_model = QLineEdit()
-        self._edit_veo_model.setPlaceholderText("veo-3.1-generate-preview")
-        add_row("Veo 모델", self._edit_veo_model, video_backend="veo")
-
-        self._edit_veo_resolution = QLineEdit()
-        self._edit_veo_resolution.setPlaceholderText("720p")
-        add_row("Veo 해상도", self._edit_veo_resolution, video_backend="veo")
-
-        self._edit_comfyui_url = QLineEdit()
-        self._edit_comfyui_url.setPlaceholderText("http://127.0.0.1:8188")
-        add_row("ComfyUI URL", self._edit_comfyui_url, video_backend="comfyui")
-
-        self._edit_comfyui_wan_model = QLineEdit()
-        self._edit_comfyui_wan_model.setPlaceholderText("wan2.6-i2v")
-        add_row("Wan model", self._edit_comfyui_wan_model, video_backend="comfyui_wan")
-
-        self._combo_comfyui_wan_resolution = QComboBox()
-        self._combo_comfyui_wan_resolution.setEditable(True)
-        self._combo_comfyui_wan_resolution.addItems(["480P", "720P", "1080P"])
-        add_row("Wan resolution", self._combo_comfyui_wan_resolution, video_backend="comfyui_wan")
-
-        self._spin_comfyui_wan_seed = QSpinBox()
-        self._spin_comfyui_wan_seed.setRange(0, 2147483647)
-        add_row("Wan seed", self._spin_comfyui_wan_seed, video_backend="comfyui_wan")
-
-        self._edit_comfyui_wan_negative = QLineEdit()
-        self._edit_comfyui_wan_negative.setPlaceholderText("low quality, blurry, text, watermark")
-        add_row("Wan negative prompt", self._edit_comfyui_wan_negative, video_backend="comfyui_wan")
-
-        self._check_comfyui_wan_prompt_extend = QCheckBox("Wan prompt extend")
-        self._check_comfyui_wan_prompt_extend.setChecked(True)
-        add_row("", self._check_comfyui_wan_prompt_extend, video_backend="comfyui_wan")
-
-        self._check_comfyui_wan_watermark = QCheckBox("Wan watermark")
-        add_row("", self._check_comfyui_wan_watermark, video_backend="comfyui_wan")
-
-        row_wan_workflow = QHBoxLayout()
-        self._edit_comfyui_wan_workflow = QLineEdit()
-        self._edit_comfyui_wan_workflow.setPlaceholderText("ComfyUI local Wan API workflow JSON")
-        btn_wan_workflow = QPushButton("찾기")
-
-        def browse_wan_workflow() -> None:
-            start = self._edit_comfyui_wan_workflow.text().strip() or str(Path.home())
-            path, _ = QFileDialog.getOpenFileName(
-                self,
-                "ComfyUI Wan API workflow JSON",
-                start,
-                "JSON files (*.json);;All files (*.*)",
-            )
-            if path:
-                self._edit_comfyui_wan_workflow.setText(path)
-
-        btn_wan_workflow.clicked.connect(browse_wan_workflow)
-        row_wan_workflow.addWidget(self._edit_comfyui_wan_workflow, stretch=1)
-        row_wan_workflow.addWidget(btn_wan_workflow)
-        add_row("Wan workflow JSON", row_wan_workflow, video_backend="comfyui_wan")
-
-        self._edit_kling_access_key = QLineEdit()
-        self._edit_kling_access_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._edit_kling_access_key.setPlaceholderText("Use KLING_ACCESS_KEY when empty")
-        add_row("Kling Access Key", self._edit_kling_access_key, video_backend="kling_api")
-
-        self._edit_kling_secret_key = QLineEdit()
-        self._edit_kling_secret_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._edit_kling_secret_key.setPlaceholderText("Use KLING_SECRET_KEY when empty")
-        add_row("Kling Secret Key", self._edit_kling_secret_key, video_backend="kling_api")
-
-        self._edit_kling_base_url = QLineEdit()
-        self._edit_kling_base_url.setPlaceholderText("https://api.klingai.com")
-        add_row("Kling API URL", self._edit_kling_base_url, video_backend="kling_api")
-
-        self._combo_kling_model = QComboBox()
-        self._combo_kling_model.setEditable(True)
-        self._combo_kling_model.addItems(["kling-v2.5-turbo", "kling-v2.6-std", "kling-v2.6-pro", "kling-video-o1"])
-        add_row("Kling API model", self._combo_kling_model, video_backend="kling_api")
-
-        self._combo_kling_mode = QComboBox()
-        self._combo_kling_mode.setEditable(True)
-        self._combo_kling_mode.addItems(["std", "pro"])
-        add_row("Kling API mode", self._combo_kling_mode, video_backend="kling_api")
-
-        self._edit_kling_negative = QLineEdit()
-        self._edit_kling_negative.setPlaceholderText("low quality, blurry, text, watermark, logo")
-        add_row("Kling API negative", self._edit_kling_negative, video_backend="kling_api")
-
-        self._combo_voice_provider = QComboBox()
-        self._combo_voice_provider.addItem("ElevenLabs", "elevenlabs")
-        self._combo_voice_provider.addItem("Gemini TTS", "gemini_tts")
-        self._combo_voice_provider.currentIndexChanged.connect(self._sync_video_production_setting_visibility)
-        add_row("\uC74C\uC131 \uC0DD\uC131 \uBC29\uC2DD", self._combo_voice_provider)
-
-        self._edit_elevenlabs_key = QLineEdit()
-        self._edit_elevenlabs_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._edit_elevenlabs_key.setPlaceholderText("비워두면 ELEVENLABS_API_KEY 환경변수 사용")
-        add_row("ElevenLabs API 키", self._edit_elevenlabs_key, voice_provider="elevenlabs")
-
-        self._edit_elevenlabs_voice = QLineEdit()
-        self._edit_elevenlabs_voice.setPlaceholderText("비워두면 ELEVENLABS_VOICE_ID 환경변수 사용")
-        add_row("ElevenLabs voice ID", self._edit_elevenlabs_voice, voice_provider="elevenlabs")
-
-        self._edit_elevenlabs_model = QLineEdit()
-        self._edit_elevenlabs_model.setPlaceholderText("eleven_multilingual_v2")
-        add_row("ElevenLabs 모델", self._edit_elevenlabs_model, voice_provider="elevenlabs")
-
-        self._edit_gemini_tts_model = QLineEdit()
-        self._edit_gemini_tts_model.setPlaceholderText("gemini-2.5-flash-preview-tts")
-        add_row("Gemini TTS \uBAA8\uB378", self._edit_gemini_tts_model, voice_provider="gemini_tts")
-
-        self._edit_gemini_tts_voice = QLineEdit()
-        self._edit_gemini_tts_voice.setPlaceholderText("Kore")
-        add_row("Gemini TTS voice", self._edit_gemini_tts_voice, voice_provider="gemini_tts")
-
-        self._edit_gemini_tts_style = QLineEdit()
-        self._edit_gemini_tts_style.setPlaceholderText("\uD55C\uAD6D\uC5B4\uB85C \uC790\uC5F0\uC2A4\uB7FD\uACE0 \uB610\uB837\uD55C \uB0B4\uB808\uC774\uC158\uC73C\uB85C \uC77D\uC5B4\uC918.")
-        add_row("Gemini TTS \uC9C0\uC2DC\uBB38", self._edit_gemini_tts_style, voice_provider="gemini_tts")
-
-        outer.addLayout(form)
-        outer.addStretch(1)
-        return w
-
     def _on_llm_provider_changed(self, _index: int) -> None:
         self._stack_llm.setCurrentIndex(self._combo_llm_provider.currentIndex())
-
-    def _sync_video_production_setting_visibility(self, _index: int | None = None) -> None:
-        if not hasattr(self, "_combo_video_backend"):
-            return
-        backend = str(self._combo_video_backend.currentData() or "veo")
-        voice_provider = str(self._combo_voice_provider.currentData() or "elevenlabs")
-        for key, widgets in getattr(self, "_video_backend_rows", {}).items():
-            visible = key == backend or (key == "comfyui" and backend == "comfyui_wan")
-            for widget in widgets:
-                widget.setVisible(visible)
-        for key, widgets in getattr(self, "_voice_provider_rows", {}).items():
-            visible = key == voice_provider
-            for widget in widgets:
-                widget.setVisible(visible)
 
     def _load_from_settings(self) -> None:
         prov = str(self._settings.value("llm/provider", "ollama"))
@@ -681,72 +506,7 @@ class SettingsDialog(QDialog):
         im_str = str(im) if im else DEFAULT_GEMINI_IMAGE_MODEL
         self._combo_gemini_image_model.setCurrentText(im_str)
 
-        self._edit_veo_model.setText(
-            str(self._settings.value("video/veo_model", "veo-3.1-generate-preview") or "veo-3.1-generate-preview")
-        )
-        self._edit_veo_resolution.setText(str(self._settings.value("video/veo_resolution", "720p") or "720p"))
-        video_backend = str(self._settings.value("video/backend", "veo") or "veo")
-        video_backend_idx = self._combo_video_backend.findData(video_backend)
-        self._combo_video_backend.setCurrentIndex(video_backend_idx if video_backend_idx >= 0 else 0)
-        self._edit_comfyui_url.setText(str(self._settings.value("comfyui/url", "http://127.0.0.1:8188") or "http://127.0.0.1:8188"))
-        self._edit_comfyui_wan_model.setText(str(self._settings.value("comfyui/wan_model", "wan2.6-i2v") or "wan2.6-i2v"))
-        self._combo_comfyui_wan_resolution.setCurrentText(str(self._settings.value("comfyui/wan_resolution", "720P") or "720P"))
-        try:
-            self._spin_comfyui_wan_seed.setValue(int(self._settings.value("comfyui/wan_seed", 0) or 0))
-        except (TypeError, ValueError):
-            self._spin_comfyui_wan_seed.setValue(0)
-        self._edit_comfyui_wan_negative.setText(str(self._settings.value("comfyui/wan_negative_prompt", "") or ""))
-        prompt_extend = self._settings.value("comfyui/wan_prompt_extend", True)
-        self._check_comfyui_wan_prompt_extend.setChecked(
-            bool(prompt_extend) if isinstance(prompt_extend, bool) else str(prompt_extend).lower() not in ("0", "false", "no", "off")
-        )
-        watermark = self._settings.value("comfyui/wan_watermark", False)
-        self._check_comfyui_wan_watermark.setChecked(
-            bool(watermark) if isinstance(watermark, bool) else str(watermark).lower() in ("1", "true", "yes", "on")
-        )
-        self._edit_comfyui_wan_workflow.setText(str(self._settings.value("comfyui/wan_workflow_path", "") or ""))
-        self._edit_kling_access_key.setText(
-            str(self._settings.value("kling/access_key", "") or self._settings.value("kling/api_key", "") or "")
-        )
-        self._edit_kling_secret_key.setText(str(self._settings.value("kling/secret_key", "") or ""))
-        kling_base_url = str(self._settings.value("kling/base_url", "https://api.klingai.com") or "https://api.klingai.com")
-        if kling_base_url.rstrip("/") == "https://api.klingapi.com":
-            kling_base_url = "https://api.klingai.com"
-        self._edit_kling_base_url.setText(kling_base_url)
-        self._combo_kling_model.setCurrentText(str(self._settings.value("kling/model", "kling-v2.5-turbo") or "kling-v2.5-turbo"))
-        kling_mode = str(self._settings.value("kling/mode", "std") or "std")
-        if kling_mode == "standard":
-            kling_mode = "std"
-        elif kling_mode == "professional":
-            kling_mode = "pro"
-        self._combo_kling_mode.setCurrentText(kling_mode)
-        self._edit_kling_negative.setText(
-            str(self._settings.value("kling/negative_prompt", "low quality, blurry, text, watermark, logo") or "")
-        )
-        voice_provider = str(self._settings.value("voice/provider", "elevenlabs") or "elevenlabs")
-        provider_idx = self._combo_voice_provider.findData(voice_provider)
-        self._combo_voice_provider.setCurrentIndex(provider_idx if provider_idx >= 0 else 0)
-        self._edit_elevenlabs_key.setText(str(self._settings.value("elevenlabs/api_key", "") or ""))
-        self._edit_elevenlabs_voice.setText(str(self._settings.value("elevenlabs/voice_id", "") or ""))
-        self._edit_elevenlabs_model.setText(
-            str(self._settings.value("elevenlabs/model", "eleven_multilingual_v2") or "eleven_multilingual_v2")
-        )
-        self._edit_gemini_tts_model.setText(
-            str(self._settings.value("gemini_tts/model", "gemini-2.5-flash-preview-tts") or "gemini-2.5-flash-preview-tts")
-        )
-        self._edit_gemini_tts_voice.setText(str(self._settings.value("gemini_tts/voice_name", "Kore") or "Kore"))
-        self._edit_gemini_tts_style.setText(
-            str(
-                self._settings.value(
-                    "gemini_tts/style_prompt",
-                    "한국어로 자연스럽고 또렷한 내레이션으로 읽어줘.",
-                )
-                or "한국어로 자연스럽고 또렷한 내레이션으로 읽어줘."
-            )
-        )
-
         self._load_stt_from_settings()
-        self._sync_video_production_setting_visibility()
 
     def _on_accept(self) -> None:
         data = self._combo_llm_provider.currentData()
@@ -775,40 +535,6 @@ class SettingsDialog(QDialog):
             "gemini/image_model",
             self._combo_gemini_image_model.currentText().strip(),
         )
-        video_backend = self._combo_video_backend.currentData()
-        self._settings.setValue("video/backend", str(video_backend or "veo"))
-        self._settings.setValue("video/veo_model", self._edit_veo_model.text().strip())
-        self._settings.setValue("video/veo_resolution", self._edit_veo_resolution.text().strip())
-        self._settings.setValue("comfyui/url", self._edit_comfyui_url.text().strip() or "http://127.0.0.1:8188")
-        self._settings.setValue("comfyui/wan_model", self._edit_comfyui_wan_model.text().strip() or "wan2.6-i2v")
-        self._settings.setValue("comfyui/wan_resolution", self._combo_comfyui_wan_resolution.currentText().strip() or "720P")
-        self._settings.setValue("comfyui/wan_seed", int(self._spin_comfyui_wan_seed.value()))
-        self._settings.setValue("comfyui/wan_negative_prompt", self._edit_comfyui_wan_negative.text().strip())
-        self._settings.setValue("comfyui/wan_prompt_extend", self._check_comfyui_wan_prompt_extend.isChecked())
-        self._settings.setValue("comfyui/wan_watermark", self._check_comfyui_wan_watermark.isChecked())
-        self._settings.setValue("comfyui/wan_workflow_path", self._edit_comfyui_wan_workflow.text().strip())
-        self._settings.setValue("kling/access_key", self._edit_kling_access_key.text().strip())
-        self._settings.setValue("kling/secret_key", self._edit_kling_secret_key.text().strip())
-        kling_base_url = self._edit_kling_base_url.text().strip() or "https://api.klingai.com"
-        if kling_base_url.rstrip("/") == "https://api.klingapi.com":
-            kling_base_url = "https://api.klingai.com"
-        self._settings.setValue("kling/base_url", kling_base_url)
-        self._settings.setValue("kling/model", self._combo_kling_model.currentText().strip() or "kling-v2.5-turbo")
-        kling_mode = self._combo_kling_mode.currentText().strip() or "std"
-        if kling_mode == "standard":
-            kling_mode = "std"
-        elif kling_mode == "professional":
-            kling_mode = "pro"
-        self._settings.setValue("kling/mode", kling_mode)
-        self._settings.setValue("kling/negative_prompt", self._edit_kling_negative.text().strip())
-        voice_provider = self._combo_voice_provider.currentData()
-        self._settings.setValue("voice/provider", str(voice_provider or "elevenlabs"))
-        self._settings.setValue("elevenlabs/api_key", self._edit_elevenlabs_key.text().strip())
-        self._settings.setValue("elevenlabs/voice_id", self._edit_elevenlabs_voice.text().strip())
-        self._settings.setValue("elevenlabs/model", self._edit_elevenlabs_model.text().strip())
-        self._settings.setValue("gemini_tts/model", self._edit_gemini_tts_model.text().strip())
-        self._settings.setValue("gemini_tts/voice_name", self._edit_gemini_tts_voice.text().strip())
-        self._settings.setValue("gemini_tts/style_prompt", self._edit_gemini_tts_style.text().strip())
         self._save_stt_to_settings()
         self._settings.sync()
         self.accept()

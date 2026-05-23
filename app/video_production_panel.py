@@ -58,9 +58,14 @@ from app.services.gemini_image_model_catalog import (
 from app.services.gemini_tts_client import synthesize_gemini_speech
 from app.services.scene_generation import SYSTEM_SCENE_JSON_KO, build_user_message, parse_storyboard_json_payload
 from app.services.srt_build import parse_srt_file, seconds_to_srt_timestamp, split_narration_lines
+from app.services.comfyui_wan_video_client import generate_video_from_image_comfyui_wan
+from app.services.kling_video_client import generate_video_from_image_kling_api
 from app.services.veo_video_client import generate_video_from_image
 
 
+VIDEO_BACKEND_VEO = "veo"
+VIDEO_BACKEND_COMFYUI_WAN = "comfyui_wan"
+VIDEO_BACKEND_KLING_API = "kling_api"
 VOICE_PROVIDER_ELEVENLABS = "elevenlabs"
 VOICE_PROVIDER_GEMINI_TTS = "gemini_tts"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
@@ -440,10 +445,10 @@ class VideoProductionWorker(QThread):
         scenes: list[Scene] = self._args["scenes"]
         aspect = api_aspect_ratio_from_resolution(str(self._args["resolution"]))
         out: list[tuple[int, str]] = []
+        backend = str(self._args.get("video_backend", VIDEO_BACKEND_VEO) or VIDEO_BACKEND_VEO)
         for i, scene in enumerate(scenes, start=1):
             if not scene.image_relpath.strip():
                 raise RuntimeError(f"씬 {scene.scene_id} 이미지가 없습니다.")
-            self.log_line.emit(f"씬 {scene.scene_id}: Veo 영상 생성")
             self.progress.emit(i, len(scenes))
             clip = parent / "video_clips" / f"scene_{scene.scene_id:03d}.mp4"
             video_prompt = scene.video_prompt_ko.strip() or scene.visual_prompt_ko.strip()
@@ -454,18 +459,64 @@ class VideoProductionWorker(QThread):
                 "Do not add readable on-screen text. Create a silent visual-only video. "
                 "No dialogue, no narration, no voice, no background music, no sound effects."
             )
-            generate_video_from_image(
-                api_key=str(self._args["gemini_api_key"]),
-                model=str(self._args["veo_model"]),
+            backend_label = {
+                VIDEO_BACKEND_COMFYUI_WAN: "ComfyUI Wan",
+                VIDEO_BACKEND_KLING_API: "Kling API",
+            }.get(backend, "Veo")
+            self.log_line.emit(f"scene {scene.scene_id}: {backend_label} video generation")
+            self._generate_clip(
                 prompt=prompt,
                 image_path=parent / scene.image_relpath,
-                out_video_path=clip,
-                resolution=str(self._args["veo_resolution"]),
-                aspect_ratio=aspect,
-                duration_seconds=clip_seconds,
+                clip=clip,
+                aspect=aspect,
+                clip_seconds=clip_seconds,
             )
             out.append((scene.scene_id, _relative(clip, parent)))
         return out
+
+    def _generate_clip(self, *, prompt: str, image_path: Path, clip: Path, aspect: str, clip_seconds: int) -> None:
+        backend = str(self._args.get("video_backend", VIDEO_BACKEND_VEO) or VIDEO_BACKEND_VEO)
+        if backend == VIDEO_BACKEND_KLING_API:
+            generate_video_from_image_kling_api(
+                access_key=str(self._args["kling_access_key"]),
+                secret_key=str(self._args["kling_secret_key"]),
+                base_url=str(self._args["kling_api_base_url"]),
+                model=str(self._args["kling_api_model"]),
+                mode=str(self._args["kling_api_mode"]),
+                prompt=prompt,
+                image_path=image_path,
+                out_video_path=clip,
+                aspect_ratio=aspect,
+                duration_seconds=clip_seconds,
+                negative_prompt=str(self._args["kling_api_negative_prompt"]),
+            )
+            return
+        if backend == VIDEO_BACKEND_COMFYUI_WAN:
+            generate_video_from_image_comfyui_wan(
+                base_url=str(self._args["comfyui_url"]),
+                model=str(self._args["comfyui_wan_model"]),
+                prompt=prompt,
+                image_path=image_path,
+                out_video_path=clip,
+                resolution=str(self._args["comfyui_wan_resolution"]),
+                duration_seconds=clip_seconds,
+                seed=int(self._args["comfyui_wan_seed"]),
+                negative_prompt=str(self._args["comfyui_wan_negative_prompt"]),
+                prompt_extend=bool(self._args["comfyui_wan_prompt_extend"]),
+                watermark=bool(self._args["comfyui_wan_watermark"]),
+                workflow_path=str(self._args["comfyui_wan_workflow_path"]),
+            )
+            return
+        generate_video_from_image(
+            api_key=str(self._args["gemini_api_key"]),
+            model=str(self._args["veo_model"]),
+            prompt=prompt,
+            image_path=image_path,
+            out_video_path=clip,
+            resolution=str(self._args["veo_resolution"]),
+            aspect_ratio=aspect,
+            duration_seconds=clip_seconds,
+        )
 
     def _concat(self) -> str:
         parent = Path(self._args["project_parent"]).resolve()
@@ -531,15 +582,12 @@ class VideoProductionWorker(QThread):
             prompt = self._supplement_prompt(last_scene, i + 1)
             self.log_line.emit(f"보충 클립 생성 {i + 1}/{clips_to_make}: {clip_seconds}s")
             self.progress.emit(i, total_units)
-            generate_video_from_image(
-                api_key=str(self._args["gemini_api_key"]),
-                model=str(self._args["veo_model"]),
+            self._generate_clip(
                 prompt=prompt,
                 image_path=parent / last_scene.image_relpath,
-                out_video_path=clip,
-                resolution=str(self._args["veo_resolution"]),
-                aspect_ratio=aspect,
-                duration_seconds=clip_seconds,
+                clip=clip,
+                aspect=aspect,
+                clip_seconds=clip_seconds,
             )
             supplement_paths.append(_relative(clip, parent))
             self.progress.emit(i + 1, total_units)
@@ -1160,6 +1208,31 @@ class VideoProductionPanel(QWidget):
             ),
             "veo_model": str(self._settings.value("video/veo_model", "veo-3.1-generate-preview") or "veo-3.1-generate-preview"),
             "veo_resolution": str(self._settings.value("video/veo_resolution", "720p") or "720p"),
+            "video_backend": str(self._settings.value("video/backend", VIDEO_BACKEND_VEO) or VIDEO_BACKEND_VEO),
+            "comfyui_url": str(self._settings.value("comfyui/url", "http://127.0.0.1:8188") or "http://127.0.0.1:8188"),
+            "comfyui_wan_model": str(self._settings.value("comfyui/wan_model", "wan2.6-i2v") or "wan2.6-i2v"),
+            "comfyui_wan_resolution": str(self._settings.value("comfyui/wan_resolution", "720P") or "720P"),
+            "comfyui_wan_seed": int(self._settings.value("comfyui/wan_seed", 0) or 0),
+            "comfyui_wan_negative_prompt": str(self._settings.value("comfyui/wan_negative_prompt", "") or ""),
+            "comfyui_wan_prompt_extend": str(self._settings.value("comfyui/wan_prompt_extend", "true")).lower() not in ("0", "false", "no", "off"),
+            "comfyui_wan_watermark": str(self._settings.value("comfyui/wan_watermark", "false")).lower() in ("1", "true", "yes", "on"),
+            "comfyui_wan_workflow_path": str(self._settings.value("comfyui/wan_workflow_path", "") or ""),
+            "kling_access_key": str(
+                self._settings.value("kling/access_key", "")
+                or self._settings.value("kling/api_key", "")
+                or os.environ.get("KLING_ACCESS_KEY", "")
+                or os.environ.get("KLING_API_KEY", "")
+            ),
+            "kling_secret_key": str(
+                self._settings.value("kling/secret_key", "") or os.environ.get("KLING_SECRET_KEY", "")
+            ),
+            "kling_api_base_url": str(self._settings.value("kling/base_url", "https://api.klingai.com") or "https://api.klingai.com"),
+            "kling_api_model": str(self._settings.value("kling/model", "kling-v2.5-turbo") or "kling-v2.5-turbo"),
+            "kling_api_mode": str(self._settings.value("kling/mode", "std") or "std"),
+            "kling_api_negative_prompt": str(
+                self._settings.value("kling/negative_prompt", "low quality, blurry, text, watermark, logo")
+                or "low quality, blurry, text, watermark, logo"
+            ),
             "elevenlabs_api_key": str(
                 self._settings.value("elevenlabs/api_key", "") or os.environ.get("ELEVENLABS_API_KEY", "")
             ),

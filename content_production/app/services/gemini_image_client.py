@@ -47,25 +47,15 @@ def _generation_config_for_model(model_id: str, aspect_ratio: str) -> dict[str, 
     responseFormat.image.* 는 ImageResponseFormat enum 이라 REST에 "16:9" 문자열을 넣으면 400.
     Gemini 3.x 이미지: responseModalities 추가.
     """
-    return {
-        "responseModalities": ["IMAGE"],
-        "imageConfig": {"aspectRatio": aspect_ratio},
-    }
+    mid = model_id.lower()
+    cfg: dict[str, Any] = {"imageConfig": {"aspectRatio": aspect_ratio}}
+    if "gemini-3" in mid and "image" in mid:
+        cfg["responseModalities"] = ["TEXT", "IMAGE"]
+    return cfg
 
 
 _MAX_IMAGE_HTTP_RETRIES = 6
 _RETRYABLE_HTTP = frozenset({429, 500, 502, 503, 504})
-
-
-def _is_quota_exhausted_error(message: str) -> bool:
-    msg = (message or "").lower()
-    return (
-        "quota exceeded" in msg
-        or "exceeded your current quota" in msg
-        or "free_tier" in msg
-        or "resource_exhausted" in msg
-        or "rate-limit" in msg
-    )
 
 
 def _inline_payload(part: dict[str, Any]) -> tuple[bytes, str] | None:
@@ -200,20 +190,16 @@ def gemini_generate_image(
         len(data),
         prompt_trimmed[: min(len(prompt_trimmed), dump_chars)],
     )
-    def make_request(payload: bytes) -> urllib.request.Request:
-        return urllib.request.Request(
-            url,
-            data=payload,
-            headers={
-                "Content-Type": "application/json; charset=utf-8",
-                "x-goog-api-key": key,
-            },
-            method="POST",
-        )
-
-    req = make_request(data)
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "x-goog-api-key": key,
+        },
+        method="POST",
+    )
     raw_txt = ""
-    aspect_retry_used = False
     for attempt in range(_MAX_IMAGE_HTTP_RETRIES):
         try:
             with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
@@ -230,19 +216,6 @@ def gemini_generate_image(
                     msg = str(em["message"])
             except json.JSONDecodeError:
                 pass
-            if e.code == 429 and _is_quota_exhausted_error(msg):
-                raise GeminiImageApiError(
-                    "Gemini 이미지 생성 할당량을 초과했습니다. Google AI Studio의 결제/쿼터를 확인하거나, "
-                    "잠시 후 다시 시도하거나, 이미지 생성 모델/API 키를 변경하세요.\n"
-                    f"원본 오류: {msg}"
-                ) from e
-            if e.code == 400 and not aspect_retry_used and "aspect" in msg.lower():
-                aspect_retry_used = True
-                logger.warning("Gemini image aspect ratio config rejected; retrying without explicit aspect ratio.")
-                body["generationConfig"] = {"responseModalities": ["IMAGE"]}
-                data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-                req = make_request(data)
-                continue
             if e.code in _RETRYABLE_HTTP and attempt < _MAX_IMAGE_HTTP_RETRIES - 1:
                 wait = min(45.0, 1.5 * (2**attempt))
                 logger.warning(
