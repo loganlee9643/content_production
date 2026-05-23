@@ -1,0 +1,5 @@
+PySide6>=6.6.0,<7
+faster-whisper>=1.2.0
+openai-whisper>=20250625
+google-generativeai
+google-genai>=1.0.0

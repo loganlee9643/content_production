@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+logs/
+logs copy/
+_session_project/
+tests copy/
