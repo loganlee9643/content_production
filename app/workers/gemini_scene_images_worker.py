@@ -23,8 +23,8 @@ def _aspect_phrase(resolution: str) -> str:
     if r == "1080x1920":
         return "세로형(약 9:16) 영상 배경에 맞게."
     if r == "1280x720":
-        return "가로형 16:9(1280×720급) 영상 배경에 맞게."
-    return "가로형 16:9(1920×1080급) 영상 배경에 맞게."
+        return "가로형 16:9(1280x720급) 영상 배경에 맞게."
+    return "가로형 16:9(1920x1080급) 영상 배경에 맞게."
 
 
 def _build_image_prompt(*, visual: str, narration: str, resolution: str) -> str:

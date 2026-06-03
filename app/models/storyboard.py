@@ -5,16 +5,17 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-PROJECT_KIND_STORYBOARD = "storyboard"
 PROJECT_KIND_WAV_SEQUENCE = "wav_sequence"
 PROJECT_KIND_VIDEO_PRODUCTION = "video_production"
+SCRIPT_INPUT_MODE_TOPIC = "topic"
+SCRIPT_INPUT_MODE_FULL_SCRIPT = "full_script"
 
 
 def normalize_project_kind(raw: str) -> str:
     s = (raw or "").strip()
-    if s in (PROJECT_KIND_STORYBOARD, PROJECT_KIND_WAV_SEQUENCE, PROJECT_KIND_VIDEO_PRODUCTION):
+    if s in (PROJECT_KIND_WAV_SEQUENCE, PROJECT_KIND_VIDEO_PRODUCTION):
         return s
-    return PROJECT_KIND_STORYBOARD
+    return PROJECT_KIND_VIDEO_PRODUCTION
 
 
 def normalize_clip_seconds(raw: object, default: int = 8) -> int:
@@ -24,10 +25,18 @@ def normalize_clip_seconds(raw: object, default: int = 8) -> int:
         value = int(default)
     if value <= 0:
         return 0 if int(default) <= 0 else normalize_clip_seconds(default, 8)
+    if value in (4, 5, 6, 8, 10):
+        return value
     if value <= 4:
         return 4
+    if value <= 5:
+        return 5
     if value <= 6:
         return 6
+    if value <= 8:
+        return 8
+    if value <= 10:
+        return 10
     return 8
 
 
@@ -38,6 +47,7 @@ class Scene:
     visual_prompt_ko: str = ""
     video_prompt_ko: str = ""
     clip_seconds: int = 8
+    llm_clip_seconds: int = 0
     transition: str = "fade"
     notes: str = ""
     audio_relpath: str = ""
@@ -51,6 +61,7 @@ class Scene:
             visual_prompt_ko=str(d.get("visual_prompt_ko", "")),
             video_prompt_ko=str(d.get("video_prompt_ko", "")),
             clip_seconds=normalize_clip_seconds(d.get("clip_seconds", 0), 0),
+            llm_clip_seconds=normalize_clip_seconds(d.get("llm_clip_seconds", 0), 0),
             transition=str(d.get("transition", "fade")),
             notes=str(d.get("notes", "")),
             audio_relpath=str(d.get("audio_relpath", "")),
@@ -64,12 +75,14 @@ class Scene:
             scene_id = int(sid_raw) if sid_raw is not None else index + 1
         except (TypeError, ValueError):
             scene_id = index + 1
+        clip_seconds = normalize_clip_seconds(d.get("clip_seconds", 8))
         return Scene(
             scene_id=scene_id,
             narration_ko=str(d.get("narration_ko", "")).strip(),
             visual_prompt_ko=str(d.get("visual_prompt_ko", "")).strip(),
             video_prompt_ko=str(d.get("video_prompt_ko", "")).strip(),
-            clip_seconds=normalize_clip_seconds(d.get("clip_seconds", 8)),
+            clip_seconds=clip_seconds,
+            llm_clip_seconds=clip_seconds,
             transition=str(d.get("transition", "fade") or "fade").strip() or "fade",
             notes=str(d.get("notes", "")).strip(),
             audio_relpath=str(d.get("audio_relpath", "")).strip(),
@@ -83,13 +96,17 @@ class Scene:
 @dataclass
 class StoryProject:
     prompt_ko: str = ""
-    project_kind: str = PROJECT_KIND_STORYBOARD
+    project_kind: str = PROJECT_KIND_VIDEO_PRODUCTION
+    script_input_mode: str = SCRIPT_INPUT_MODE_TOPIC
     target_minutes: int = 7
+    clip_seconds_mode: str = "llm"
     resolution: str = "1920x1080"
     fps: int = 30
     merged_srt_relpath: str = ""
     export_final_relpath: str = ""
     background_image_relpath: str = ""
+    reference_image_prompt: str = ""
+    reference_image_relpath: str = ""
     bgm_relpath: str = ""
     bgm_volume_percent: int = 20
     scenes: list[Scene] = field(default_factory=list)
@@ -98,7 +115,7 @@ class StoryProject:
     FORMAT_VERSION = 1
 
     @staticmethod
-    def empty_default(*, project_kind: str = PROJECT_KIND_STORYBOARD) -> StoryProject:
+    def empty_default(*, project_kind: str = PROJECT_KIND_VIDEO_PRODUCTION) -> StoryProject:
         pk = normalize_project_kind(project_kind)
         return StoryProject(
             prompt_ko="",
@@ -115,14 +132,18 @@ class StoryProject:
             "prompt_ko": self.prompt_ko,
             "settings": {
                 "target_minutes": self.target_minutes,
+                "clip_seconds_mode": self.clip_seconds_mode,
                 "resolution": self.resolution,
                 "fps": self.fps,
                 "merged_srt_relpath": self.merged_srt_relpath,
                 "export_final_relpath": self.export_final_relpath,
                 "background_image_relpath": self.background_image_relpath,
+                "reference_image_prompt": self.reference_image_prompt,
+                "reference_image_relpath": self.reference_image_relpath,
                 "bgm_relpath": self.bgm_relpath,
                 "bgm_volume_percent": self.bgm_volume_percent,
                 "project_kind": self.project_kind,
+                "script_input_mode": self.script_input_mode,
             },
             "scenes": [s.to_dict() for s in self.scenes],
         }
@@ -141,17 +162,21 @@ class StoryProject:
         return StoryProject(
             prompt_ko=str(data.get("prompt_ko", "")),
             target_minutes=int(settings.get("target_minutes", 7)),
+            clip_seconds_mode=str(settings.get("clip_seconds_mode", "llm")),
             resolution=str(settings.get("resolution", "1920x1080")),
             fps=int(settings.get("fps", 30)),
             merged_srt_relpath=str(settings.get("merged_srt_relpath", "")),
             export_final_relpath=str(settings.get("export_final_relpath", "")),
             background_image_relpath=str(settings.get("background_image_relpath", "")),
+            reference_image_prompt=str(settings.get("reference_image_prompt", "")),
+            reference_image_relpath=str(settings.get("reference_image_relpath", "")),
             bgm_relpath=str(settings.get("bgm_relpath", "")),
             bgm_volume_percent=max(
                 1,
                 min(50, int(float(settings.get("bgm_volume_percent", 20)))),
             ),
-            project_kind=normalize_project_kind(str(settings.get("project_kind", PROJECT_KIND_STORYBOARD))),
+            project_kind=normalize_project_kind(str(settings.get("project_kind", PROJECT_KIND_VIDEO_PRODUCTION))),
+            script_input_mode=str(settings.get("script_input_mode", SCRIPT_INPUT_MODE_TOPIC)),
             scenes=scenes,
         )
 

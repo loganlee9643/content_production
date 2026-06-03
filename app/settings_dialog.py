@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -11,13 +11,16 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QStackedWidget,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -34,22 +37,110 @@ from app.stt_settings_defaults import (
 )
 
 
+def _bool_value(raw: object, default: bool = False) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return default
+    text = str(raw).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
 class SettingsDialog(QDialog):
     """LLM·Piper·자막·STT·Gemini 이미지 모델 등 앱 전역 설정(QSettings)."""
 
     def __init__(self, parent: QWidget | None, settings: QSettings) -> None:
         super().__init__(parent)
         self._settings = settings
-        self.setWindowTitle("환경 설정")
-        self.resize(580, 620)
+        self.setWindowTitle("설정")
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setModal(True)
+        self.resize(820, 620)
+        self.setStyleSheet(
+            """
+            QDialog { background: transparent; }
+            #settingsShell {
+                background: #ffffff;
+                border-radius: 14px;
+            }
+            #settingsTitle {
+                font-size: 20px;
+                font-weight: 800;
+                color: #222333;
+            }
+            #settingsClose {
+                border: 0;
+                border-radius: 12px;
+                background: transparent;
+                font-size: 22px;
+                color: #343449;
+            }
+            #settingsClose:hover { background: #f0eef8; }
+            #settingsSidebar {
+                background: #f6f4fb;
+                border-bottom-left-radius: 14px;
+            }
+            #settingsContent {
+                background: #ffffff;
+            }
+            QListWidget {
+                background: transparent;
+                border: 0;
+                outline: 0;
+                color: #4a4b60;
+                font-size: 14px;
+            }
+            QListWidget::item {
+                min-height: 34px;
+                padding: 6px 12px;
+                border-radius: 6px;
+            }
+            QListWidget::item:selected {
+                background: #ffffff;
+                color: #202033;
+                font-weight: 800;
+            }
+            #settingsContentTitle {
+                font-size: 18px;
+                font-weight: 800;
+                color: #222333;
+                margin-bottom: 4px;
+            }
+            #settingsPage {
+                background: #ffffff;
+            }
+            #settingsPageInner {
+                background: #ffffff;
+            }
+            #settingsPageScroll {
+                background: #ffffff;
+                border: 0;
+            }
+            """
+        )
 
-        tabs = QTabWidget()
-        tabs.addTab(self._build_llm_tab(), "LLM")
-        tabs.addTab(self._build_tts_tab(), "음성 (Piper)")
-        tabs.addTab(self._build_stt_tab(), "STT (자막 추출)")
-        tabs.addTab(self._build_subtitle_tab(), "자막 (SRT)")
-        tabs.addTab(self._build_image_tab(), "씬 배경 이미지")
-        tabs.addTab(self._build_video_production_tab(), "영상 제작")
+        self._category_list = QListWidget()
+        self._settings_stack = QStackedWidget()
+
+        pages = [
+            ("⚙  일반", "일반", self._build_llm_tab()),
+            ("▱  음성", "음성 (Piper)", self._build_tts_tab()),
+            ("▣  자막 추출", "STT (자막 추출)", self._build_stt_tab()),
+            ("≡  자막", "자막 (SRT)", self._build_subtitle_tab()),
+            ("▧  이미지", "씬 배경 이미지", self._build_image_tab()),
+            ("▶  영상 제작", "영상 제작", self._build_video_production_tab()),
+        ]
+        for nav_label, page_title, page in pages:
+            item = QListWidgetItem(nav_label)
+            self._category_list.addItem(item)
+            self._settings_stack.addWidget(self._wrap_settings_page(page_title, page))
+        self._category_list.currentRowChanged.connect(self._settings_stack.setCurrentIndex)
+        self._category_list.setCurrentRow(0)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
@@ -58,14 +149,130 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         root = QVBoxLayout(self)
-        root.addWidget(tabs)
-        root.addWidget(buttons)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        shell = QFrame()
+        shell.setObjectName("settingsShell")
+        shell_lay = QVBoxLayout(shell)
+        shell_lay.setContentsMargins(0, 0, 0, 0)
+        shell_lay.setSpacing(0)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(32, 24, 32, 22)
+        title = QLabel("설정")
+        title.setObjectName("settingsTitle")
+        close_btn = QPushButton("×")
+        close_btn.setObjectName("settingsClose")
+        close_btn.setFixedSize(28, 28)
+        close_btn.clicked.connect(self.reject)
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(close_btn)
+        shell_lay.addLayout(header)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        sidebar = QFrame()
+        sidebar.setObjectName("settingsSidebar")
+        sidebar.setFixedWidth(220)
+        sidebar_lay = QVBoxLayout(sidebar)
+        sidebar_lay.setContentsMargins(24, 28, 18, 28)
+        sidebar_lay.addWidget(self._category_list)
+        body.addWidget(sidebar)
+
+        content = QWidget()
+        content.setObjectName("settingsContent")
+        content_lay = QVBoxLayout(content)
+        content_lay.setContentsMargins(40, 34, 40, 28)
+        content_lay.setSpacing(16)
+        content_lay.addWidget(self._settings_stack, stretch=1)
+        content_lay.addWidget(buttons, alignment=Qt.AlignmentFlag.AlignRight)
+        body.addWidget(content, stretch=1)
+        shell_lay.addLayout(body, stretch=1)
+
+        root.addWidget(shell)
 
         self._load_from_settings()
+
+    def _wrap_settings_page(self, title: str, page: QWidget) -> QWidget:
+        wrapper = QWidget()
+        wrapper.setObjectName("settingsPage")
+        outer = QVBoxLayout(wrapper)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        inner = QWidget()
+        inner.setObjectName("settingsPageInner")
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(22)
+        title_label = QLabel(title)
+        title_label.setObjectName("settingsContentTitle")
+        lay.addWidget(title_label)
+
+        self._polish_settings_page(page)
+        scroll = QScrollArea()
+        scroll.setObjectName("settingsPageScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setWidget(page)
+        lay.addWidget(scroll, stretch=1)
+        outer.addWidget(inner, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        return wrapper
+
+    def _polish_settings_page(self, page: QWidget) -> None:
+        page.setStyleSheet("background: #ffffff;")
+        for form in page.findChildren(QFormLayout):
+            form.setContentsMargins(0, 0, 0, 0)
+            form.setHorizontalSpacing(0)
+            form.setVerticalSpacing(10)
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+            form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        for edit in page.findChildren(QLineEdit):
+            if isinstance(edit.parent(), (QComboBox, QSpinBox, QDoubleSpinBox)):
+                continue
+            edit.setMinimumWidth(420)
+            edit.setMaximumWidth(560)
+        for combo in page.findChildren(QComboBox):
+            combo.setMinimumWidth(420)
+            combo.setMaximumWidth(560)
+        for spin in page.findChildren(QSpinBox):
+            spin.setMinimumWidth(120)
+            spin.setMaximumWidth(180)
+        for spin in page.findChildren(QDoubleSpinBox):
+            spin.setMinimumWidth(120)
+            spin.setMaximumWidth(180)
 
     def _build_llm_tab(self) -> QWidget:
         w = QWidget()
         form = QFormLayout(w)
+
+        row_project_root = QHBoxLayout()
+        self._edit_project_root = QLineEdit()
+        self._edit_project_root.setPlaceholderText("비우면 앱 폴더를 기본 workspace 루트로 사용")
+        btn_project_root = QPushButton("찾기...")
+
+        def browse_project_root() -> None:
+            start = self._edit_project_root.text().strip() or str(Path.home())
+            path = QFileDialog.getExistingDirectory(
+                self,
+                "workspace 루트 폴더",
+                start,
+                QFileDialog.Option.ShowDirsOnly,
+            )
+            if path:
+                self._edit_project_root.setText(path)
+
+        btn_project_root.clicked.connect(browse_project_root)
+        row_project_root.addWidget(self._edit_project_root, stretch=1)
+        row_project_root.addWidget(btn_project_root)
+        form.addRow("workspace 루트 폴더", row_project_root)
 
         self._combo_llm_provider = QComboBox()
         self._combo_llm_provider.addItem("Ollama (로컬)", "ollama")
@@ -279,6 +486,33 @@ class SettingsDialog(QDialog):
         )
         form.addRow("log_prob_threshold", self._spin_stt_log_prob)
 
+        self._check_stt_condition_previous = QCheckBox("이전 자막 문맥 이어가기")
+        self._check_stt_condition_previous.setToolTip(
+            "condition_on_previous_text. 긴 오디오에서 타임스탬프가 건너뛰면 끄는 것이 유리합니다."
+        )
+        form.addRow("condition_on_previous_text", self._check_stt_condition_previous)
+
+        self._spin_stt_temperature = QDoubleSpinBox()
+        self._spin_stt_temperature.setRange(0.0, 1.0)
+        self._spin_stt_temperature.setDecimals(2)
+        self._spin_stt_temperature.setSingleStep(0.05)
+        self._spin_stt_temperature.setToolTip("Whisper 디코딩 temperature. 자막 타이밍 안정성은 보통 0.0이 가장 낫습니다.")
+        form.addRow("temperature", self._spin_stt_temperature)
+
+        self._spin_stt_compression = QDoubleSpinBox()
+        self._spin_stt_compression.setRange(0.0, 10.0)
+        self._spin_stt_compression.setDecimals(1)
+        self._spin_stt_compression.setSingleStep(0.1)
+        self._spin_stt_compression.setToolTip("compression_ratio_threshold. 반복/이상 출력 재시도 기준입니다. 기본 2.4.")
+        form.addRow("compression_ratio_threshold", self._spin_stt_compression)
+
+        self._spin_stt_chunk_length = QSpinBox()
+        self._spin_stt_chunk_length.setRange(15, 60)
+        self._spin_stt_chunk_length.setSingleStep(5)
+        self._spin_stt_chunk_length.setSuffix(" s")
+        self._spin_stt_chunk_length.setToolTip("faster-whisper chunk_length. 기본 30초.")
+        form.addRow("chunk_length", self._spin_stt_chunk_length)
+
         outer.addLayout(form)
         outer.addStretch(1)
         return w
@@ -315,6 +549,12 @@ class SettingsDialog(QDialog):
         self._spin_stt_no_speech.setValue(float(preset.get("stt/no_speech_threshold", 0.8)))
         self._spin_stt_max_no_speech.setValue(float(preset.get("stt/max_no_speech_prob", 0.8)))
         self._spin_stt_log_prob.setValue(float(preset.get("stt/log_prob_threshold", -2.0)))
+        self._check_stt_condition_previous.setChecked(
+            _bool_value(preset.get("stt/condition_on_previous_text"), False)
+        )
+        self._spin_stt_temperature.setValue(float(preset.get("stt/temperature", 0.0)))
+        self._spin_stt_compression.setValue(float(preset.get("stt/compression_ratio_threshold", 2.4)))
+        self._spin_stt_chunk_length.setValue(int(preset.get("stt/chunk_length", 30)))
         self._sync_stt_vad_controls_enabled()
 
     def _stt_default(self, key: str) -> object:
@@ -361,12 +601,30 @@ class SettingsDialog(QDialog):
             (self._spin_stt_no_speech, "stt/no_speech_threshold"),
             (self._spin_stt_max_no_speech, "stt/max_no_speech_prob"),
             (self._spin_stt_log_prob, "stt/log_prob_threshold"),
+            (self._spin_stt_temperature, "stt/temperature"),
+            (self._spin_stt_compression, "stt/compression_ratio_threshold"),
         ):
             raw = self._settings.value(key, self._stt_default(key))
             try:
                 spin.setValue(float(raw))
             except (TypeError, ValueError):
                 spin.setValue(float(self._stt_default(key)))
+
+        self._check_stt_condition_previous.setChecked(
+            _bool_value(
+                self._settings.value(
+                    "stt/condition_on_previous_text",
+                    self._stt_default("stt/condition_on_previous_text"),
+                ),
+                False,
+            )
+        )
+        try:
+            self._spin_stt_chunk_length.setValue(
+                max(15, int(self._settings.value("stt/chunk_length", self._stt_default("stt/chunk_length"))))
+            )
+        except (TypeError, ValueError):
+            self._spin_stt_chunk_length.setValue(30)
 
         self._sync_stt_vad_controls_enabled()
 
@@ -385,6 +643,10 @@ class SettingsDialog(QDialog):
         self._settings.setValue("stt/no_speech_threshold", float(self._spin_stt_no_speech.value()))
         self._settings.setValue("stt/max_no_speech_prob", float(self._spin_stt_max_no_speech.value()))
         self._settings.setValue("stt/log_prob_threshold", float(self._spin_stt_log_prob.value()))
+        self._settings.setValue("stt/condition_on_previous_text", self._check_stt_condition_previous.isChecked())
+        self._settings.setValue("stt/temperature", float(self._spin_stt_temperature.value()))
+        self._settings.setValue("stt/compression_ratio_threshold", float(self._spin_stt_compression.value()))
+        self._settings.setValue("stt/chunk_length", int(self._spin_stt_chunk_length.value()))
 
     def _build_subtitle_tab(self) -> QWidget:
         w = QWidget()
@@ -553,17 +815,29 @@ class SettingsDialog(QDialog):
         add_row("Kling Secret Key", self._edit_kling_secret_key, video_backend="kling_api")
 
         self._edit_kling_base_url = QLineEdit()
-        self._edit_kling_base_url.setPlaceholderText("https://api.klingai.com")
+        self._edit_kling_base_url.setPlaceholderText("https://api-singapore.klingai.com")
         add_row("Kling API URL", self._edit_kling_base_url, video_backend="kling_api")
 
         self._combo_kling_model = QComboBox()
         self._combo_kling_model.setEditable(True)
-        self._combo_kling_model.addItems(["kling-v2.5-turbo", "kling-v2.6-std", "kling-v2.6-pro", "kling-video-o1"])
+        self._combo_kling_model.addItems(
+            [
+                "kling-v3",
+                "kling-v2-6",
+                "kling-v2-5-turbo",
+                "kling-v2-1-master",
+                "kling-v2-1",
+                "kling-v2-master",
+                "kling-v1-6",
+                "kling-v1-5",
+                "kling-v1",
+            ]
+        )
         add_row("Kling API model", self._combo_kling_model, video_backend="kling_api")
 
         self._combo_kling_mode = QComboBox()
         self._combo_kling_mode.setEditable(True)
-        self._combo_kling_mode.addItems(["std", "pro"])
+        self._combo_kling_mode.addItems(["pro", "std", "4k"])
         add_row("Kling API mode", self._combo_kling_mode, video_backend="kling_api")
 
         self._edit_kling_negative = QLineEdit()
@@ -598,8 +872,14 @@ class SettingsDialog(QDialog):
         add_row("Gemini TTS voice", self._edit_gemini_tts_voice, voice_provider="gemini_tts")
 
         self._edit_gemini_tts_style = QLineEdit()
-        self._edit_gemini_tts_style.setPlaceholderText("\uD55C\uAD6D\uC5B4\uB85C \uC790\uC5F0\uC2A4\uB7FD\uACE0 \uB610\uB837\uD55C \uB0B4\uB808\uC774\uC158\uC73C\uB85C \uC77D\uC5B4\uC918.")
+        self._edit_gemini_tts_style.setPlaceholderText(
+            "한국어로 자연스럽고 또렷한 내레이션으로 읽어줘. 모든 문단에서 같은 화자처럼 일정한 톤, 속도, 음색을 유지해줘."
+        )
         add_row("Gemini TTS \uC9C0\uC2DC\uBB38", self._edit_gemini_tts_style, voice_provider="gemini_tts")
+
+        self._check_gemini_tts_split_audio = QCheckBox("긴 대본을 여러 묶음으로 나눠 생성")
+        self._check_gemini_tts_split_audio.setChecked(True)
+        add_row("Gemini TTS 분할 생성", self._check_gemini_tts_split_audio, voice_provider="gemini_tts")
 
         outer.addLayout(form)
         outer.addStretch(1)
@@ -623,6 +903,9 @@ class SettingsDialog(QDialog):
                 widget.setVisible(visible)
 
     def _load_from_settings(self) -> None:
+        project_root = self._settings.value("project/root_dir", "")
+        self._edit_project_root.setText(str(project_root) if project_root else "")
+
         prov = str(self._settings.value("llm/provider", "ollama"))
         idx = 1 if prov == "gemini" else 0
         self._combo_llm_provider.blockSignals(True)
@@ -709,11 +992,23 @@ class SettingsDialog(QDialog):
             str(self._settings.value("kling/access_key", "") or self._settings.value("kling/api_key", "") or "")
         )
         self._edit_kling_secret_key.setText(str(self._settings.value("kling/secret_key", "") or ""))
-        kling_base_url = str(self._settings.value("kling/base_url", "https://api.klingai.com") or "https://api.klingai.com")
+        kling_base_url = str(
+            self._settings.value("kling/base_url", "https://api-singapore.klingai.com")
+            or "https://api-singapore.klingai.com"
+        )
         if kling_base_url.rstrip("/") == "https://api.klingapi.com":
-            kling_base_url = "https://api.klingai.com"
+            kling_base_url = "https://api-singapore.klingai.com"
         self._edit_kling_base_url.setText(kling_base_url)
-        self._combo_kling_model.setCurrentText(str(self._settings.value("kling/model", "kling-v2.5-turbo") or "kling-v2.5-turbo"))
+        kling_model = str(self._settings.value("kling/model", "kling-v2-5-turbo") or "kling-v2-5-turbo")
+        kling_model = {
+            "kling-v2.5-turbo": "kling-v2-5-turbo",
+            "kling-v2.6": "kling-v2-6",
+            "kling-v2.6-std": "kling-v2-6",
+            "kling-v2.6-pro": "kling-v2-6",
+            "kling-v3.0": "kling-v3",
+            "kling-3.0": "kling-v3",
+        }.get(kling_model, kling_model)
+        self._combo_kling_model.setCurrentText(kling_model)
         kling_mode = str(self._settings.value("kling/mode", "std") or "std")
         if kling_mode == "standard":
             kling_mode = "std"
@@ -739,10 +1034,13 @@ class SettingsDialog(QDialog):
             str(
                 self._settings.value(
                     "gemini_tts/style_prompt",
-                    "한국어로 자연스럽고 또렷한 내레이션으로 읽어줘.",
+                    "한국어로 자연스럽고 또렷한 내레이션으로 읽어줘. 모든 문단에서 같은 화자처럼 일정한 톤, 속도, 음색을 유지해줘.",
                 )
-                or "한국어로 자연스럽고 또렷한 내레이션으로 읽어줘."
+                or "한국어로 자연스럽고 또렷한 내레이션으로 읽어줘. 모든 문단에서 같은 화자처럼 일정한 톤, 속도, 음색을 유지해줘."
             )
+        )
+        self._check_gemini_tts_split_audio.setChecked(
+            _bool_value(self._settings.value("gemini_tts/split_audio", True), True)
         )
 
         self._load_stt_from_settings()
@@ -751,6 +1049,7 @@ class SettingsDialog(QDialog):
     def _on_accept(self) -> None:
         data = self._combo_llm_provider.currentData()
         prov = str(data) if data is not None else "ollama"
+        self._settings.setValue("project/root_dir", self._edit_project_root.text().strip())
         self._settings.setValue("llm/provider", prov)
         self._settings.setValue("ollama/base_url", self._edit_ollama_url.text().strip())
         self._settings.setValue("ollama/model", self._edit_ollama_model.text().strip())
@@ -789,11 +1088,11 @@ class SettingsDialog(QDialog):
         self._settings.setValue("comfyui/wan_workflow_path", self._edit_comfyui_wan_workflow.text().strip())
         self._settings.setValue("kling/access_key", self._edit_kling_access_key.text().strip())
         self._settings.setValue("kling/secret_key", self._edit_kling_secret_key.text().strip())
-        kling_base_url = self._edit_kling_base_url.text().strip() or "https://api.klingai.com"
+        kling_base_url = self._edit_kling_base_url.text().strip() or "https://api-singapore.klingai.com"
         if kling_base_url.rstrip("/") == "https://api.klingapi.com":
-            kling_base_url = "https://api.klingai.com"
+            kling_base_url = "https://api-singapore.klingai.com"
         self._settings.setValue("kling/base_url", kling_base_url)
-        self._settings.setValue("kling/model", self._combo_kling_model.currentText().strip() or "kling-v2.5-turbo")
+        self._settings.setValue("kling/model", self._combo_kling_model.currentText().strip() or "kling-v2-5-turbo")
         kling_mode = self._combo_kling_mode.currentText().strip() or "std"
         if kling_mode == "standard":
             kling_mode = "std"
@@ -809,6 +1108,7 @@ class SettingsDialog(QDialog):
         self._settings.setValue("gemini_tts/model", self._edit_gemini_tts_model.text().strip())
         self._settings.setValue("gemini_tts/voice_name", self._edit_gemini_tts_voice.text().strip())
         self._settings.setValue("gemini_tts/style_prompt", self._edit_gemini_tts_style.text().strip())
+        self._settings.setValue("gemini_tts/split_audio", self._check_gemini_tts_split_audio.isChecked())
         self._save_stt_to_settings()
         self._settings.sync()
         self.accept()

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import wave
 from pathlib import Path
+from typing import Callable
 
 from app.models.storyboard import Scene
 
@@ -240,6 +241,192 @@ def concat_segments_copy(
         "aac",
         "-b:a",
         "192k",
+        str(out_mp4.resolve()),
+    ]
+    run_ffmpeg(cmd, cwd=cwd)
+
+
+def _normalize_segment_with_audio(
+    *,
+    ffmpeg: str,
+    input_path: Path,
+    out_path: Path,
+    width: int,
+    height: int,
+    fps: int,
+    cwd: Path,
+) -> None:
+    vf = (
+        "setpts=PTS-STARTPTS,"
+        f"fps={fps},"
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+        "format=yuv420p"
+    )
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-fflags",
+        "+genpts",
+        "-i",
+        str(input_path.resolve()),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0",
+        "-vf",
+        vf,
+        "-af",
+        "aresample=48000,asetpts=PTS-STARTPTS",
+        "-r",
+        str(fps),
+        "-fps_mode",
+        "cfr",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-b:a",
+        "192k",
+        "-movflags",
+        "+faststart",
+        str(out_path.resolve()),
+    ]
+    run_ffmpeg(cmd, cwd=cwd)
+
+
+def _normalize_segment_with_silence(
+    *,
+    ffmpeg: str,
+    input_path: Path,
+    out_path: Path,
+    width: int,
+    height: int,
+    fps: int,
+    cwd: Path,
+) -> None:
+    vf = (
+        "setpts=PTS-STARTPTS,"
+        f"fps={fps},"
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+        "format=yuv420p"
+    )
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-fflags",
+        "+genpts",
+        "-i",
+        str(input_path.resolve()),
+        "-f",
+        "lavfi",
+        "-i",
+        "anullsrc=channel_layout=stereo:sample_rate=48000",
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a:0",
+        "-vf",
+        vf,
+        "-r",
+        str(fps),
+        "-fps_mode",
+        "cfr",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "medium",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-b:a",
+        "192k",
+        "-shortest",
+        "-movflags",
+        "+faststart",
+        str(out_path.resolve()),
+    ]
+    run_ffmpeg(cmd, cwd=cwd)
+
+
+def concat_segments_normalized(
+    *,
+    ffmpeg: str,
+    segment_paths: list[Path],
+    out_mp4: Path,
+    cwd: Path,
+    width: int,
+    height: int,
+    fps: int,
+    progress_callback: Callable[[int, int, Path], None] | None = None,
+) -> None:
+    if not segment_paths:
+        raise FFmpegRenderError("No video segments to concatenate.")
+    out_mp4.parent.mkdir(parents=True, exist_ok=True)
+    normalized_dir = out_mp4.parent / "normalized_clips"
+    normalized_dir.mkdir(parents=True, exist_ok=True)
+
+    normalized: list[Path] = []
+    total = len(segment_paths)
+    for index, segment in enumerate(segment_paths, start=1):
+        normalized_path = normalized_dir / f"segment_{index:03d}.mp4"
+        if progress_callback is not None:
+            progress_callback(index, total, segment)
+        try:
+            _normalize_segment_with_audio(
+                ffmpeg=ffmpeg,
+                input_path=segment,
+                out_path=normalized_path,
+                width=width,
+                height=height,
+                fps=fps,
+                cwd=cwd,
+            )
+        except FFmpegRenderError:
+            _normalize_segment_with_silence(
+                ffmpeg=ffmpeg,
+                input_path=segment,
+                out_path=normalized_path,
+                width=width,
+                height=height,
+                fps=fps,
+                cwd=cwd,
+            )
+        normalized.append(normalized_path)
+
+    list_file = out_mp4.parent / "concat_list_normalized.txt"
+    write_concat_list(normalized, list_file)
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(list_file.resolve()),
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
         str(out_mp4.resolve()),
     ]
     run_ffmpeg(cmd, cwd=cwd)

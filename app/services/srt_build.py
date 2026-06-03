@@ -77,17 +77,11 @@ def build_srt_from_timed_lines(
         text = " ".join(str(item.get("text", "")).split()).strip()
         if not text:
             continue
-        sublines = split_narration_lines(text, max_line_chars) or [text]
-        step = (en - st) / len(sublines)
-        t = st
-        for line in sublines:
-            end = min(en, t + step)
-            blocks.append(str(cue_index))
-            blocks.append(f"{seconds_to_srt_timestamp(t)} --> {seconds_to_srt_timestamp(end)}")
-            blocks.append(line)
-            blocks.append("")
-            cue_index += 1
-            t = end
+        blocks.append(str(cue_index))
+        blocks.append(f"{seconds_to_srt_timestamp(st)} --> {seconds_to_srt_timestamp(en)}")
+        blocks.append(text)
+        blocks.append("")
+        cue_index += 1
     if not blocks:
         raise ValueError("자막 구간이 없습니다.")
     return "\n".join(blocks).rstrip() + "\n"
@@ -162,20 +156,76 @@ def seconds_to_srt_timestamp(sec: float) -> str:
 
 
 def split_narration_lines(text: str, max_chars: int) -> list[str]:
-    """나레이션을 자막 줄 단위로 나눕니다(공백 정리 후 글자 수 기준)."""
+    """나레이션을 자막 줄 단위로 나눕니다(공백·문장 경계를 우선)."""
     t = " ".join((text or "").split())
     if not t:
         return []
     max_chars = max(8, int(max_chars))
     if len(t) <= max_chars:
         return [t]
+    target_count = max(1, (len(t) + max_chars - 1) // max_chars)
+    if target_count > 1:
+        balanced = _split_balanced_by_boundaries(t, target_count=target_count, max_chars=max_chars)
+        if balanced:
+            return balanced
     lines: list[str] = []
-    i = 0
-    while i < len(t):
-        chunk = t[i : i + max_chars]
-        lines.append(chunk)
-        i += max_chars
+    remaining = t
+    while len(remaining) > max_chars:
+        window = remaining[: max_chars + 1]
+        cut = max(
+            window.rfind(" "),
+            window.rfind(","),
+            window.rfind("."),
+            window.rfind("?"),
+            window.rfind("!"),
+            window.rfind("，"),
+            window.rfind("。"),
+            window.rfind("？"),
+            window.rfind("！"),
+        )
+        if cut < max(8, max_chars // 2):
+            cut = max_chars
+        chunk = remaining[:cut].strip()
+        if chunk:
+            lines.append(chunk)
+        remaining = remaining[cut:].strip()
+    if remaining:
+        lines.append(remaining)
     return lines
+
+
+def _split_balanced_by_boundaries(text: str, *, target_count: int, max_chars: int) -> list[str]:
+    remaining = text.strip()
+    chunks: list[str] = []
+    punctuation = set(",.?!，。？！、…")
+    for remaining_chunks in range(target_count, 1, -1):
+        ideal = max(8, round(len(remaining) / remaining_chunks))
+        slack = max(6, ideal // 3)
+        lower = max(8, ideal - slack)
+        upper = min(len(remaining) - 1, max_chars, ideal + slack)
+        candidates: list[int] = []
+        for i, ch in enumerate(remaining[: upper + 1]):
+            if i < lower:
+                continue
+            if ch.isspace():
+                candidates.append(i)
+            elif ch in punctuation:
+                candidates.append(i + 1)
+        if not candidates:
+            candidates = [min(max_chars, ideal)]
+        cut = min(candidates, key=lambda pos: (abs(pos - ideal), pos))
+        chunk = remaining[:cut].strip()
+        if not chunk:
+            return []
+        chunks.append(chunk)
+        remaining = remaining[cut:].strip()
+    if remaining:
+        chunks.append(remaining)
+    if len(chunks) != target_count:
+        return []
+    if any(len(chunk) > max_chars for chunk in chunks):
+        return []
+    return chunks
 
 
 def build_merged_srt(

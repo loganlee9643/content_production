@@ -6,10 +6,12 @@ import os
 import re
 import shutil
 import traceback
+import hashlib
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QItemSelectionModel, QSettings, QUrl, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QColor, QMouseEvent, QPainter, QPen
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -27,6 +30,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSlider,
     QDoubleSpinBox,
     QSpinBox,
@@ -42,7 +46,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.models.storyboard import (
-    PROJECT_KIND_STORYBOARD,
     PROJECT_KIND_VIDEO_PRODUCTION,
     PROJECT_KIND_WAV_SEQUENCE,
     Scene,
@@ -59,6 +62,7 @@ from app.services.gemini_image_model_catalog import (
 )
 from app.services.gemini_model_catalog import DEFAULT_GEMINI_MODEL, GEMINI_MODEL_PRESET_IDS
 from app.services.ffprobe_audio import FfprobeError, ffprobe_duration_seconds
+from app.services.ffmpeg_render import FFmpegRenderError, run_ffmpeg, which_ffmpeg
 from app.services.srt_build import build_merged_srt, merge_wav_subtitle_srts
 from app.services.stt_transcribe import set_stt_runtime_options
 from app.settings_dialog import SettingsDialog
@@ -77,7 +81,7 @@ from app.workers.gemini_wav_segment_images_worker import GeminiWavSegmentImagesW
 from app.workers.stt_wav_segments_worker import SttWavSegmentsWorker
 from app.workers.music_analysis_worker import MusicAnalysisWorker
 
-_JSON_FILTER = "스토리보드 JSON (*.json);;모든 파일 (*.*)"
+_JSON_FILTER = "프로젝트 JSON (*.json);;모든 파일 (*.*)"
 
 _ROLE_NAV_KIND = Qt.ItemDataRole.UserRole
 _ROLE_SCENE_ROW = Qt.ItemDataRole.UserRole + 1
@@ -238,13 +242,47 @@ class MainWindow(QMainWindow):
         self._build_central()
         self.setStatusBar(QStatusBar())
         self._restore_gemini_image_combo_from_settings()
-        if not self._try_restore_last_project():
-            self._sync_ui_from_project(mark_clean=True, tree_focus=("prompt", 0))
+        self._refresh_home_recent_list()
+        self._show_home(confirm=False)
         self._update_window_title()
 
     def _remember_last_project_path(self, path: Path) -> None:
-        self._settings.setValue("project/last_path", str(path.resolve()))
+        resolved = str(path.resolve())
+        recent = [p for p in self._recent_project_paths(include_missing=True) if p != resolved]
+        recent.insert(0, resolved)
+        self._settings.setValue("project/last_path", resolved)
+        self._settings.setValue("project/recent_paths", recent[:12])
         self._settings.sync()
+
+    def _recent_project_paths(self, *, include_missing: bool = False) -> list[str]:
+        raw = self._settings.value("project/recent_paths", [])
+        if raw is None:
+            items: list[object] = []
+        elif isinstance(raw, (list, tuple)):
+            items = list(raw)
+        else:
+            items = [raw]
+        last = str(self._settings.value("project/last_path", "") or "").strip()
+        if last:
+            items.insert(0, last)
+
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            s = str(item or "").strip()
+            if not s:
+                continue
+            try:
+                p = Path(s).resolve()
+            except OSError:
+                continue
+            key = str(p)
+            if key in seen:
+                continue
+            if include_missing or p.is_file():
+                seen.add(key)
+                out.append(key)
+        return out
 
     def _try_restore_last_project(self) -> bool:
         raw = str(self._settings.value("project/last_path", "") or "").strip()
@@ -327,12 +365,30 @@ class MainWindow(QMainWindow):
         menu_help = self.menuBar().addMenu("도움말")
         menu_help.addAction(self._act_about)
 
+        self._btn_title_settings = QPushButton("⚙")
+        self._btn_title_settings.setFlat(True)
+        self._btn_title_settings.setToolTip("환경 설정")
+        self._btn_title_settings.setFixedSize(28, 24)
+        self._btn_title_settings.clicked.connect(self._on_open_settings)
+        self._btn_title_settings.setStyleSheet(
+            "QPushButton { padding: 0; border: 0; color: #343449; font-size: 15px; }"
+            "QPushButton:hover { background: #eceef7; border-radius: 4px; }"
+        )
+        self._title_settings_wrap = QWidget()
+        title_settings_lay = QHBoxLayout(self._title_settings_wrap)
+        title_settings_lay.setContentsMargins(0, 0, 0, 0)
+        title_settings_lay.setSpacing(0)
+        title_settings_lay.addWidget(self._btn_title_settings)
+        title_settings_spacer = QLabel("")
+        title_settings_spacer.setFixedWidth(48)
+        title_settings_lay.addWidget(title_settings_spacer)
+        self.menuBar().setCornerWidget(self._title_settings_wrap, Qt.Corner.TopRightCorner)
+
         for a in (
             self._act_new,
             self._act_open,
             self._act_save,
             self._act_save_as,
-            self._act_generate_scenes,
             self._act_tts_wav,
             self._act_subtitle_srt,
             self._act_export_mp4,
@@ -341,6 +397,9 @@ class MainWindow(QMainWindow):
             self.addAction(a)
 
     def _build_central(self) -> None:
+        self._main_stack = QStackedWidget()
+        self._home_page = self._build_home_page()
+
         central = QWidget()
         root = QVBoxLayout(central)
         root.setContentsMargins(4, 4, 4, 4)
@@ -442,9 +501,355 @@ class MainWindow(QMainWindow):
         job_lay.addWidget(self._job_log)
         root.addWidget(self._job_panel)
 
-        self.setCentralWidget(central)
+        self._main_stack.addWidget(self._home_page)
+        self._main_stack.addWidget(central)
+        self.setCentralWidget(self._main_stack)
         self._update_context_bar_visibility()
         self._update_mode_banner()
+
+    def _show_home(self, *, confirm: bool) -> None:
+        if confirm and not self._confirm_discard_unsaved():
+            return
+        self._refresh_home_recent_list()
+        self._main_stack.setCurrentWidget(self._home_page)
+        self.statusBar().showMessage("홈", 3000)
+
+    def _show_editor(self) -> None:
+        self._main_stack.setCurrentIndex(1)
+
+    def _refresh_home_recent_list(self) -> None:
+        if not hasattr(self, "_my_videos_grid"):
+            return
+        while self._my_videos_grid.count():
+            item = self._my_videos_grid.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+        paths = self._recent_project_paths()
+        if not paths:
+            empty = QLabel("최근에 편집한 동영상이 없습니다.")
+            empty.setObjectName("emptyRecent")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._my_videos_grid.addWidget(empty, 0, 0)
+            return
+
+        for idx, raw in enumerate(paths[:8]):
+            p = Path(raw)
+            self._my_videos_grid.addWidget(self._build_recent_project_card(p), idx // 4, idx % 4)
+
+    def _build_recent_project_card(self, path: Path) -> QWidget:
+        title_text = path.parent.name if path.name.lower() == "project.json" else path.stem
+        btn = QPushButton()
+        btn.setObjectName("recentCard")
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setToolTip(str(path))
+        btn.clicked.connect(lambda _checked=False, p=path: self._open_recent_project(p))
+        btn.setFixedSize(300, 210)
+
+        lay = QVBoxLayout(btn)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        thumb = QLabel()
+        thumb.setObjectName("recentThumb")
+        thumb.setFixedSize(300, 150)
+        thumb_path = self._home_thumbnail_path(path)
+        pix = self._card_thumbnail_pixmap(thumb_path, 300, 150) if thumb_path else QPixmap()
+        if pix.isNull():
+            thumb.setText("콘텐츠 제작")
+            thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        else:
+            thumb.setPixmap(pix)
+        lay.addWidget(thumb)
+
+        info = QWidget()
+        info_lay = QVBoxLayout(info)
+        info_lay.setContentsMargins(12, 8, 12, 8)
+        info_lay.setSpacing(2)
+        title = QLabel(title_text or "동영상 프로젝트")
+        title.setObjectName("recentTitle")
+        meta = QLabel(self._recent_project_meta(path))
+        meta.setObjectName("recentMeta")
+        title.setWordWrap(False)
+        meta.setWordWrap(False)
+        info_lay.addWidget(title)
+        info_lay.addWidget(meta)
+        lay.addWidget(info)
+        return btn
+
+    def _recent_project_meta(self, path: Path) -> str:
+        try:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        except OSError:
+            mtime = "수정 시간 알 수 없음"
+        return mtime
+
+    def _resolve_project_asset_path(self, parent: Path, relpath: str) -> Path | None:
+        rel = str(relpath or "").strip()
+        if not rel:
+            return None
+        p = Path(rel)
+        return p if p.is_absolute() else parent / rel
+
+    def _home_thumbnail_path(self, project_path: Path) -> Path | None:
+        try:
+            project = StoryProject.load_json(project_path)
+        except (OSError, ValueError, KeyError):
+            return None
+        parent = project_path.parent
+        image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+        video_suffixes = {".mp4", ".mov", ".webm", ".mkv", ".avi"}
+
+        candidates: list[Path] = []
+        final_video = self._resolve_project_asset_path(parent, project.export_final_relpath)
+        if final_video is not None:
+            candidates.append(final_video)
+        if project.scenes:
+            first = project.scenes[0]
+            if first.notes.startswith("video_relpath:"):
+                scene_video = self._resolve_project_asset_path(parent, first.notes[len("video_relpath:") :])
+                if scene_video is not None:
+                    candidates.append(scene_video)
+            candidates.append(parent / "video_clips" / f"scene_{first.scene_id:03d}.mp4")
+            scene_image = self._resolve_project_asset_path(parent, first.image_relpath)
+            if scene_image is not None:
+                candidates.append(scene_image)
+
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            suffix = candidate.suffix.lower()
+            if suffix in image_suffixes:
+                return candidate
+            if suffix in video_suffixes:
+                thumb = self._extract_home_video_thumbnail(project_path, candidate)
+                if thumb is not None:
+                    return thumb
+        return None
+
+    def _extract_home_video_thumbnail(self, project_path: Path, video_path: Path) -> Path | None:
+        try:
+            ffmpeg = which_ffmpeg()
+            key_raw = f"{video_path.resolve()}|{video_path.stat().st_mtime_ns}"
+            key = hashlib.sha1(key_raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+            cache_dir = project_path.parent / ".home_thumbnails"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            out = cache_dir / f"{key}.jpg"
+            if out.is_file():
+                return out
+            run_ffmpeg(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-ss",
+                    "0.5",
+                    "-i",
+                    str(video_path),
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale=600:338:force_original_aspect_ratio=increase,crop=600:338",
+                    str(out),
+                ],
+                timeout_sec=20.0,
+            )
+            return out if out.is_file() else None
+        except (OSError, FFmpegRenderError):
+            return None
+
+    def _card_thumbnail_pixmap(self, path: Path | None, width: int, height: int) -> QPixmap:
+        if path is None or not path.is_file():
+            return QPixmap()
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            return QPixmap()
+        scaled = pix.scaled(
+            width,
+            height,
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        x = max(0, (scaled.width() - width) // 2)
+        y = max(0, (scaled.height() - height) // 2)
+        return scaled.copy(x, y, width, height)
+
+    def _open_recent_project(self, path: Path) -> None:
+        if not self._confirm_discard_unsaved():
+            return
+        self._load_project_path(path, status_prefix="최근 동영상 열음")
+
+    def _build_home_action_card(
+        self,
+        title: str,
+        subtitle: str,
+        marker: str,
+        object_name: str,
+        *,
+        enabled: bool = True,
+    ) -> QPushButton:
+        btn = QPushButton(f"{title}\n{subtitle}")
+        btn.setObjectName(object_name)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor if enabled else Qt.CursorShape.ArrowCursor)
+        btn.setEnabled(enabled)
+        btn.setFixedSize(315, 64)
+        return btn
+
+    def _build_new_video_action_card(self) -> QPushButton:
+        btn = QPushButton()
+        btn.setObjectName("newVideoCard")
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setFixedSize(315, 64)
+        lay = QHBoxLayout(btn)
+        lay.setContentsMargins(14, 10, 16, 10)
+        lay.setSpacing(8)
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        title = QLabel("새 동영상 만들기")
+        title.setObjectName("newVideoCardTitle")
+        subtitle = QLabel("새로 시작")
+        subtitle.setObjectName("newVideoCardSubtitle")
+        text_col.addWidget(title)
+        text_col.addWidget(subtitle)
+        lay.addLayout(text_col, stretch=1)
+        plus = QLabel("+")
+        plus.setObjectName("newVideoCardPlus")
+        plus.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        plus.setFixedSize(18, 18)
+        lay.addWidget(plus)
+        return btn
+
+    def _build_home_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("homePage")
+        page.setStyleSheet(
+            """
+            #homePage { background: #f5f6fb; color: #232331; }
+            #homeSidebar { background: #eceef7; border-right: 1px solid #dde0ec; }
+            #homeNavButton {
+                text-align: left; padding: 10px 14px; border: 0; border-radius: 6px;
+                background: #ffffff; font-weight: 600;
+            }
+            #homeHeader { font-size: 22px; font-weight: 700; }
+            #newVideoCard, #aiVideoCard {
+                border: 0; border-radius: 4px; padding: 11px 14px; color: #ffffff;
+                text-align: left; font-weight: 700;
+            }
+            #newVideoCard {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #b711dc, stop:1 #6043f5);
+            }
+            #newVideoCard:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #c314ef, stop:1 #6d52ff);
+            }
+            #newVideoCardTitle { color: #ffffff; font-weight: 800; font-size: 13px; }
+            #newVideoCardSubtitle { color: #ffffff; font-weight: 700; font-size: 11px; }
+            #newVideoCardPlus {
+                background: #ffffff; color: #7240ef; border-radius: 9px;
+                font-weight: 900; font-size: 14px;
+            }
+            #aiVideoCard {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #663bf1, stop:1 #284be8);
+            }
+            #aiVideoCard:disabled {
+                color: #ffffff; opacity: 1.0;
+            }
+            #sectionToolButton {
+                padding: 7px 12px; border: 1px solid #d8dbe8; border-radius: 4px;
+                background: #ffffff; font-weight: 600;
+            }
+            #homeSectionTitle { font-size: 18px; font-weight: 700; margin-top: 12px; }
+            #recentCard {
+                background: #ffffff; border: 1px solid #dfe1eb; border-radius: 4px;
+                text-align: left; padding: 0; color: #222333;
+            }
+            #recentCard:hover { border: 1px solid #9b60ff; background: #fbf8ff; }
+            #recentThumb {
+                background: #f5edff; color: #7e42df; border-top-left-radius: 4px;
+                border-top-right-radius: 4px; font-weight: 800;
+            }
+            #recentTitle { color: #151622; font-weight: 700; font-size: 12px; }
+            #recentMeta { color: #5f6373; font-size: 11px; }
+            #emptyRecent {
+                color: #747789; background: #ffffff; border: 1px dashed #d5d8e4;
+                border-radius: 4px; padding: 28px;
+            }
+            """
+        )
+
+        root = QHBoxLayout(page)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        sidebar = QWidget()
+        sidebar.setObjectName("homeSidebar")
+        sidebar.setFixedWidth(180)
+        side_lay = QVBoxLayout(sidebar)
+        side_lay.setContentsMargins(10, 12, 10, 12)
+        brand = QLabel("콘텐츠 제작")
+        brand.setStyleSheet("font-weight: 800; font-size: 15px; padding: 4px 2px 14px 2px;")
+        side_lay.addWidget(brand)
+        nav_home = QPushButton("홈")
+        nav_home.setObjectName("homeNavButton")
+        nav_home.clicked.connect(lambda: self._show_home(confirm=False))
+        side_lay.addWidget(nav_home)
+        side_lay.addStretch(1)
+        root.addWidget(sidebar)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(28, 28, 36, 28)
+        lay.setSpacing(18)
+
+        hello = QLabel("만나서 반갑습니다!")
+        hello.setObjectName("homeHeader")
+        lay.addWidget(hello)
+
+        action_row = QHBoxLayout()
+        self._btn_home_new_video = self._build_new_video_action_card()
+        self._btn_home_new_video.clicked.connect(self._on_new_project)
+        action_row.addWidget(self._btn_home_new_video)
+        self._btn_home_ai_video = self._build_home_action_card(
+            "AI를 사용하여 비디오 만들기",
+            "사용자 고유의 미디어를 사용하여 비디오를 빠르게 자동 작성",
+            "✦",
+            "aiVideoCard",
+            enabled=False,
+        )
+        action_row.addWidget(self._btn_home_ai_video)
+        action_row.addStretch(1)
+        lay.addLayout(action_row)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #e1e3ec;")
+        lay.addWidget(sep)
+
+        section_row = QHBoxLayout()
+        section_title = QLabel("나의 동영상")
+        section_title.setObjectName("homeSectionTitle")
+        section_row.addWidget(section_title)
+        section_row.addStretch(1)
+        self._btn_home_import = QPushButton("↑ 가져오기")
+        self._btn_home_import.setObjectName("sectionToolButton")
+        self._btn_home_import.clicked.connect(self._on_open)
+        section_row.addWidget(self._btn_home_import)
+        lay.addLayout(section_row)
+
+        self._recent_projects_container = QWidget()
+        self._my_videos_grid = QGridLayout(self._recent_projects_container)
+        self._my_videos_grid.setContentsMargins(0, 0, 0, 0)
+        self._my_videos_grid.setHorizontalSpacing(12)
+        self._my_videos_grid.setVerticalSpacing(12)
+        self._my_videos_grid.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        lay.addWidget(self._recent_projects_container)
+        lay.addStretch(1)
+
+        scroll.setWidget(content)
+        root.addWidget(scroll, stretch=1)
+        return page
 
     def _update_mode_banner(self) -> None:
         if self._project.project_kind == PROJECT_KIND_VIDEO_PRODUCTION:
@@ -457,7 +862,7 @@ class MainWindow(QMainWindow):
             )
         else:
             self._mode_banner.setText(
-                "모드: 스토리보드 — 프롬프트·씬·LLM·TTS·병합 SRT·최종 MP4 파이프라인으로 작업합니다. "
+                "모드: 영상 제작 프로젝트 - Gemini 대본/이미지, 영상 클립, 음성/자막을 단계별로 생성합니다. "
                 "(WAV 목록 영상 기능도 「도구」에서 사용할 수 있습니다.)"
             )
 
@@ -942,6 +1347,14 @@ class MainWindow(QMainWindow):
             no_speech_threshold=self._settings_float("stt/no_speech_threshold", _def_float("stt/no_speech_threshold")),
             max_no_speech_prob=self._settings_float("stt/max_no_speech_prob", _def_float("stt/max_no_speech_prob")),
             log_prob_threshold=self._settings_float("stt/log_prob_threshold", _def_float("stt/log_prob_threshold")),
+            condition_on_previous_text=self._settings_bool(
+                "stt/condition_on_previous_text", _def_bool("stt/condition_on_previous_text")
+            ),
+            temperature=self._settings_float("stt/temperature", _def_float("stt/temperature")),
+            compression_ratio_threshold=self._settings_float(
+                "stt/compression_ratio_threshold", _def_float("stt/compression_ratio_threshold")
+            ),
+            chunk_length=max(15, self._settings_int("stt/chunk_length", _def_int("stt/chunk_length"))),
         )
 
     def _restore_gemini_image_combo_from_settings(self) -> None:
@@ -972,7 +1385,7 @@ class MainWindow(QMainWindow):
                 return ("video_production", 0)
             if self._project.project_kind == PROJECT_KIND_WAV_SEQUENCE:
                 return ("wav_sequence", 0)
-            return ("prompt", 0)
+            return ("video_production", 0)
         k = it.data(0, _ROLE_NAV_KIND)
         try:
             kind = int(k) if k is not None else _NAV_PROMPT
@@ -1003,7 +1416,7 @@ class MainWindow(QMainWindow):
             return ("video_production", 0)
         if self._project.project_kind == PROJECT_KIND_WAV_SEQUENCE:
             return ("wav_sequence", 0)
-        return ("prompt", 0)
+        return ("video_production", 0)
 
     def _rebuild_nav_tree(self) -> None:
         self._nav_tree.blockSignals(True)
@@ -1142,7 +1555,7 @@ class MainWindow(QMainWindow):
             elif self._project.project_kind == PROJECT_KIND_WAV_SEQUENCE:
                 self._stack_right.setCurrentIndex(_RIGHT_WAV_SEQUENCE)
             else:
-                self._stack_right.setCurrentIndex(_RIGHT_PROMPT)
+                self._stack_right.setCurrentIndex(_RIGHT_VIDEO_PRODUCTION)
 
         self._update_context_bar_visibility()
 
@@ -1212,9 +1625,9 @@ class MainWindow(QMainWindow):
         kind_s, _ = snap
         is_wav_mode = self._project.project_kind == PROJECT_KIND_WAV_SEQUENCE
         is_video_mode = self._project.project_kind == PROJECT_KIND_VIDEO_PRODUCTION
-        show_prompt = (not is_wav_mode and not is_video_mode) and kind_s == "prompt"
-        show_batch_media = (not is_wav_mode and not is_video_mode) and kind_s == "scenes"
-        show_single_wav = (not is_wav_mode and not is_video_mode) and kind_s == "scene"
+        show_prompt = False
+        show_batch_media = False
+        show_single_wav = False
         show_wav_tools = is_wav_mode
 
         self._btn_ctx_llm.setVisible(show_prompt)
@@ -3284,7 +3697,25 @@ class MainWindow(QMainWindow):
         self._stack_right.setCurrentIndex(_RIGHT_LOG)
 
     def project_root(self) -> Path:
+        configured = str(self._settings.value("project/root_dir", "") or "").strip()
+        if configured:
+            return Path(configured).expanduser().resolve()
         return Path(__file__).resolve().parent.parent
+
+    def _workspace_dir_from_name(self, name: str) -> Path | None:
+        workspace_name = name.strip()
+        if not workspace_name:
+            return None
+        candidate = Path(workspace_name)
+        invalid_chars = set('<>:"/\\|?*')
+        if (
+            candidate.is_absolute()
+            or candidate.name != workspace_name
+            or workspace_name in (".", "..")
+            or any(ch in invalid_chars for ch in workspace_name)
+        ):
+            return None
+        return self.project_root() / workspace_name
 
     def _video_project_parent(self) -> Path | None:
         if self._project_path is None:
@@ -3441,11 +3872,7 @@ class MainWindow(QMainWindow):
                 elif fk not in ("wav_sequence", "log"):
                     focus = ("wav_sequence", 0)
             else:
-                if fk == "scene":
-                    fr = max(0, min(fr, max(0, len(self._project.scenes) - 1)))
-                    focus = ("scene", fr)
-                elif fk == "wav_sequence":
-                    focus = ("prompt", 0)
+                focus = ("video_production", 0)
             self._apply_tree_focus(focus)
 
             if self._stack_right.currentIndex() == _RIGHT_SCENE_ONE and self._single_scene_row >= 0:
@@ -3550,6 +3977,8 @@ class MainWindow(QMainWindow):
             merged_srt_relpath=self._project.merged_srt_relpath,
             export_final_relpath=export_rel,
             background_image_relpath=self._edit_bg_image.text().strip(),
+            reference_image_prompt=self._project.reference_image_prompt,
+            reference_image_relpath=self._project.reference_image_relpath,
             bgm_relpath=self._edit_bgm.text().strip(),
             bgm_volume_percent=int(self._spin_bgm_volume.value()),
             scenes=scenes,
@@ -3589,21 +4018,35 @@ class MainWindow(QMainWindow):
         dlg = NewProjectModeDialog(self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        picked = QFileDialog.getExistingDirectory(
+        workspace_name, ok = QInputDialog.getText(
             self,
-            "새 프로젝트 폴더 선택/생성",
-            str(self.project_root()),
-            QFileDialog.Option.ShowDirsOnly,
+            "새 workspace",
+            "workspace 이름",
         )
-        if not picked:
+        if not ok:
             return
-        project_dir = Path(picked)
-        project_path = project_dir / "storyboard.json"
+        project_dir = self._workspace_dir_from_name(workspace_name)
+        if project_dir is None:
+            QMessageBox.warning(
+                self,
+                "새 workspace",
+                "workspace 이름을 올바르게 입력하세요.\n경로 구분자나 다음 문자는 사용할 수 없습니다: < > : \" / \\ | ? *",
+            )
+            return
+        try:
+            self.project_root().mkdir(parents=True, exist_ok=True)
+            project_dir.mkdir(parents=False, exist_ok=False)
+        except FileExistsError:
+            pass
+        except OSError as e:
+            QMessageBox.critical(self, "workspace 생성 실패", str(e))
+            return
+        project_path = project_dir / "project.json"
         if project_path.exists():
             answer = QMessageBox.question(
                 self,
-                "새 프로젝트",
-                f"선택한 폴더에 storyboard.json 파일이 이미 있습니다.\n덮어쓰고 새 프로젝트를 만들까요?\n\n{project_path}",
+                "새 workspace",
+                f"'{project_dir.name}' workspace에 project.json 파일이 이미 있습니다.\n덮어쓰고 새 프로젝트를 만들까요?\n\n{project_path}",
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
@@ -3616,8 +4059,9 @@ class MainWindow(QMainWindow):
             self._project_path = None
             return
         self._remember_last_project_path(project_path)
-        focus = ("video_production", 0) if self._project.project_kind == PROJECT_KIND_VIDEO_PRODUCTION else ("prompt", 0)
+        focus = ("wav_sequence", 0) if self._project.project_kind == PROJECT_KIND_WAV_SEQUENCE else ("video_production", 0)
         self._sync_ui_from_project(mark_clean=True, tree_focus=focus)
+        self._show_editor()
         self.statusBar().showMessage(f"새 프로젝트: {project_path}", 5000)
 
     def _on_open(self) -> None:
@@ -3626,7 +4070,9 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "프로젝트 열기", str(self.project_root()), _JSON_FILTER)
         if not path:
             return
-        p = Path(path)
+        self._load_project_path(Path(path), status_prefix="열음")
+
+    def _load_project_path(self, p: Path, *, status_prefix: str) -> None:
         try:
             self._project = StoryProject.load_json(p)
         except (OSError, ValueError, KeyError) as e:
@@ -3634,8 +4080,10 @@ class MainWindow(QMainWindow):
             return
         self._project_path = p
         self._remember_last_project_path(p)
-        self._sync_ui_from_project(mark_clean=True, tree_focus=("prompt", 0))
-        self.statusBar().showMessage(f"열음: {p}", 5000)
+        focus = ("wav_sequence", 0) if self._project.project_kind == PROJECT_KIND_WAV_SEQUENCE else ("video_production", 0)
+        self._sync_ui_from_project(mark_clean=True, tree_focus=focus)
+        self._show_editor()
+        self.statusBar().showMessage(f"{status_prefix}: {p}", 5000)
 
     def _on_save(self) -> None:
         if self._project_path is None:
@@ -3644,7 +4092,7 @@ class MainWindow(QMainWindow):
         self._save_to_path(self._project_path)
 
     def _on_save_as(self) -> None:
-        start = str(self._project_path) if self._project_path else str(self.project_root() / "storyboard.json")
+        start = str(self._project_path) if self._project_path else str(self.project_root() / "project.json")
         path, _ = QFileDialog.getSaveFileName(self, "다른 이름으로 저장", start, _JSON_FILTER)
         if not path:
             return
@@ -3662,6 +4110,7 @@ class MainWindow(QMainWindow):
         self._project_path = path
         self._remember_last_project_path(path)
         self._sync_ui_from_project(mark_clean=True, tree_focus=snap)
+        self._refresh_home_recent_list()
 
     def _any_worker_running(self) -> bool:
         v = self._validate_worker is not None and self._validate_worker.isRunning()
@@ -4370,6 +4819,8 @@ class MainWindow(QMainWindow):
             merged_srt_relpath=merged_srt_rel,
             export_final_relpath=out_rel,
             background_image_relpath=base.background_image_relpath,
+            reference_image_prompt=base.reference_image_prompt,
+            reference_image_relpath=base.reference_image_relpath,
             bgm_relpath=base.bgm_relpath,
             bgm_volume_percent=base.bgm_volume_percent,
             scenes=scenes,
@@ -4490,6 +4941,8 @@ class MainWindow(QMainWindow):
                 self._act_validate,
             ):
                 a.setEnabled(not busy)
+            if hasattr(self, "_btn_title_settings"):
+                self._btn_title_settings.setEnabled(not busy)
             self._nav_tree.setEnabled(not busy)
             self._btn_ctx_llm.setEnabled(not busy)
             self._btn_ctx_wav_add.setEnabled(not busy)
@@ -4557,7 +5010,7 @@ class MainWindow(QMainWindow):
             return False
         if clicked == save_btn:
             if self._project_path is None:
-                start = str(self.project_root() / "storyboard.json")
+                start = str(self.project_root() / "project.json")
                 path, _ = QFileDialog.getSaveFileName(self, "저장", start, _JSON_FILTER)
                 if not path:
                     return False

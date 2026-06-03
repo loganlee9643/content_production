@@ -3,10 +3,12 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import mimetypes
 import os
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 from typing import cast
 
@@ -50,6 +52,17 @@ def _generation_config_for_model(model_id: str, aspect_ratio: str) -> dict[str, 
     return {
         "responseModalities": ["IMAGE"],
         "imageConfig": {"aspectRatio": aspect_ratio},
+    }
+
+
+def _image_part_from_path(path: Path) -> dict[str, Any]:
+    mime = mimetypes.guess_type(path.name)[0] or "image/png"
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return {
+        "inlineData": {
+            "mimeType": mime,
+            "data": data,
+        }
     }
 
 
@@ -162,6 +175,7 @@ def gemini_generate_image(
     model: str,
     *,
     prompt: str,
+    reference_image_paths: list[Path] | None = None,
     aspect_ratio: str = "16:9",
     timeout_sec: float = 180.0,
 ) -> tuple[bytes, str]:
@@ -178,10 +192,14 @@ def gemini_generate_image(
 
     url = _gemini_generate_url(model_id)
     gen_cfg = _generation_config_for_model(model_id, aspect_ratio)
+    parts: list[dict[str, Any]] = [{"text": prompt.strip()}]
+    for ref_path in reference_image_paths or []:
+        if ref_path.is_file():
+            parts.append(_image_part_from_path(ref_path))
 
     body: dict[str, Any] = {
         # 공식 curl 예시와 동일하게 role 생략 가능
-        "contents": [{"parts": [{"text": prompt.strip()}]}],
+        "contents": [{"parts": parts}],
         "generationConfig": gen_cfg,
     }
     data = json.dumps(body, ensure_ascii=False).encode("utf-8")
