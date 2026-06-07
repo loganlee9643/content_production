@@ -114,7 +114,7 @@ def ffprobe_duration_seconds(media: Path) -> float:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=60,
+                timeout=8,
                 check=False,
                 **_no_window_kwargs(),
             )
@@ -162,7 +162,7 @@ def ffprobe_duration_seconds(media: Path) -> float:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    timeout=60,
+                    timeout=8,
                     check=False,
                     **_no_window_kwargs(),
                 )

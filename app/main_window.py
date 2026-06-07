@@ -68,6 +68,7 @@ from app.services.stt_transcribe import set_stt_runtime_options
 from app.settings_dialog import SettingsDialog
 from app.new_project_dialog import NewProjectModeDialog
 from app.wav_sequence_dialog import WavSeqRow, WavSequenceDialog
+from app.video_editor_panel import VideoEditorPanel
 from app.video_production_panel import VideoProductionPanel
 from app.workers.final_render_worker import EXPORT_FINAL_REL, FinalRenderWorker
 from app.workers.wav_sequence_render_worker import WavSequenceRenderWorker
@@ -109,6 +110,7 @@ _NAV_LOG = 4
 _NAV_WAV_SEQUENCE = 5
 _NAV_WAV_ROW = 6
 _NAV_VIDEO_PRODUCTION = 7
+_NAV_VIDEO_EDITOR = 8
 
 _RIGHT_PROMPT = 0
 _RIGHT_SCENES_TABLE = 1
@@ -117,6 +119,7 @@ _RIGHT_LOG = 3
 _RIGHT_WAV_SEQUENCE = 4
 _RIGHT_WAV_ONE = 5
 _RIGHT_VIDEO_PRODUCTION = 6
+_RIGHT_VIDEO_EDITOR = 7
 
 logger = logging.getLogger(__name__)
 
@@ -466,6 +469,9 @@ class MainWindow(QMainWindow):
         self._video_production_panel = VideoProductionPanel(self._video_project_parent, self)
         self._video_production_panel.stateChanged.connect(self._mark_dirty)
         self._stack_right.addWidget(self._video_production_panel)
+        self._video_editor_panel = VideoEditorPanel(self._video_project_parent, self)
+        self._video_editor_panel.stateChanged.connect(self._mark_dirty)
+        self._stack_right.addWidget(self._video_editor_panel)
 
         splitter.addWidget(self._nav_tree)
         splitter.addWidget(self._stack_right)
@@ -1410,6 +1416,8 @@ class MainWindow(QMainWindow):
             return ("wav", row)
         if kind == _NAV_VIDEO_PRODUCTION:
             return ("video_production", 0)
+        if kind == _NAV_VIDEO_EDITOR:
+            return ("video_editor", 0)
         if kind == _NAV_SCENE_ROW:
             return ("scene", row)
         if self._project.project_kind == PROJECT_KIND_VIDEO_PRODUCTION:
@@ -1426,6 +1434,9 @@ class MainWindow(QMainWindow):
             it_video = QTreeWidgetItem(["영상 제작"])
             it_video.setData(0, _ROLE_NAV_KIND, _NAV_VIDEO_PRODUCTION)
             self._nav_tree.addTopLevelItem(it_video)
+            it_editor = QTreeWidgetItem(["영상 편집"])
+            it_editor.setData(0, _ROLE_NAV_KIND, _NAV_VIDEO_EDITOR)
+            self._nav_tree.addTopLevelItem(it_editor)
         elif self._project.project_kind == PROJECT_KIND_WAV_SEQUENCE:
             it_wav = QTreeWidgetItem(["전체"])
             it_wav.setData(0, _ROLE_NAV_KIND, _NAV_WAV_SEQUENCE)
@@ -1463,6 +1474,8 @@ class MainWindow(QMainWindow):
         target: QTreeWidgetItem | None = None
         if self._project.project_kind == PROJECT_KIND_VIDEO_PRODUCTION:
             if kind_s == "log":
+                target = self._nav_tree.topLevelItem(2)
+            elif kind_s == "video_editor":
                 target = self._nav_tree.topLevelItem(1)
             else:
                 target = self._nav_tree.topLevelItem(0)
@@ -1547,6 +1560,11 @@ class MainWindow(QMainWindow):
             self._single_scene_row = -1
             self._single_wav_row = -1
             self._stack_right.setCurrentIndex(_RIGHT_VIDEO_PRODUCTION)
+        elif kind == _NAV_VIDEO_EDITOR:
+            self._single_scene_row = -1
+            self._single_wav_row = -1
+            self._video_editor_panel.refresh_media()
+            self._stack_right.setCurrentIndex(_RIGHT_VIDEO_EDITOR)
         else:
             self._single_scene_row = -1
             self._single_wav_row = -1
@@ -3858,12 +3876,13 @@ class MainWindow(QMainWindow):
 
             self._sync_wav_sequence_table_from_project()
             self._video_production_panel.set_project(self._project, self._video_project_parent())
+            self._video_editor_panel.set_project(self._project, self._video_project_parent())
 
             self._rebuild_nav_tree()
             fk = focus[0]
             fr = focus[1]
             if self._project.project_kind == PROJECT_KIND_VIDEO_PRODUCTION:
-                if fk not in ("video_production", "log"):
+                if fk not in ("video_production", "video_editor", "log"):
                     focus = ("video_production", 0)
             elif self._project.project_kind == PROJECT_KIND_WAV_SEQUENCE:
                 if fk == "wav":
@@ -3903,6 +3922,7 @@ class MainWindow(QMainWindow):
         if self._project.project_kind == PROJECT_KIND_VIDEO_PRODUCTION:
             scenes = list(self._project.scenes)
             self._video_production_panel.apply_to_project(self._project)
+            self._video_editor_panel.apply_to_project(self._project)
             scenes = list(self._project.scenes)
         elif self._project.project_kind == PROJECT_KIND_WAV_SEQUENCE:
             rows = self._collect_wav_sequence_rows(allow_empty=True) or []
