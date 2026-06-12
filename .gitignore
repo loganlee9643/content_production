@@ -6,3 +6,4 @@ logs/
 logs copy/
 _session_project/
 tests copy/
+tmp/

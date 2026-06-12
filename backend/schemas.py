@@ -1,0 +1,50 @@
+# -*- coding:utf-8 -*-
+
+from datetime import datetime
+import os
+from typing import Any, List, Optional, Union
+
+from pydantic import BaseModel, Field
+
+
+class Response(BaseModel):
+    code: Optional[int] = 0
+    msg: Optional[str] = "success"
+    data: Optional[Any] = None
+
+
+class CustomModeGenerateParam(BaseModel):
+    """Generate with Custom Mode"""
+
+    prompt: str = Field(..., description="lyrics")
+    mv: str = Field(
+        default_factory=lambda: os.getenv("SUNO_MODEL", "chirp-fenix"),
+        description="model version, Suno v5.5: chirp-fenix",
+        examples=["chirp-fenix"],
+    )
+    title: str = Field(..., description="song title")
+    tags: str = Field(..., description="style of music")
+    negative_tags: str = Field(..., description="negative style of music")
+    continue_at: Optional[int] = Field(
+        default=None,
+        description="continue a new clip from a previous song, format number",
+        examples=[120],
+    )
+    continue_clip_id: Optional[str] = None
+
+
+class DescriptionModeGenerateParam(BaseModel):
+    """Generate with Song Description"""
+
+    gpt_description_prompt: str
+    make_instrumental: bool = False
+    mv: str = Field(
+        default_factory=lambda: os.getenv("SUNO_MODEL", "chirp-fenix"),
+        description="model version, Suno v5.5: chirp-fenix",
+        examples=["chirp-fenix"],
+    )
+    
+    prompt: str = Field(
+        default="",
+        description="Placeholder, keep it as an empty string, do not modify it",
+    )
