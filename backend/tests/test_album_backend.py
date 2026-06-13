@@ -174,6 +174,36 @@ class AlbumBackendTest(unittest.TestCase):
         with Image.open(output) as image:
             self.assertEqual(image.size, (1280, 720))
 
+    def test_thumbnail_copy_generation_uses_album_context(self) -> None:
+        album = self.create_album()
+        job = services.create_job(
+            "thumbnail_copy_generate",
+            "album",
+            album["id"],
+        )
+        response = json.dumps(
+            {
+                "headline": "오늘은 이 노래",
+                "subheadline": "퇴근 후 마음이 풀리는 플레이리스트",
+                "accent": "감성 충전",
+            },
+            ensure_ascii=False,
+        )
+
+        with patch.object(services, "_gemini_text", return_value=response) as gemini:
+            services.run_thumbnail_copy_generation(
+                job["id"],
+                album["id"],
+                "따뜻한 어쿠스틱 분위기",
+            )
+
+        completed = db.get_one("jobs", job["id"])
+        self.assertEqual(completed["status"], "succeeded")
+        self.assertEqual(completed["result"]["headline"], "오늘은 이 노래")
+        prompt = gemini.call_args.args[1]
+        self.assertIn(album["title"], prompt)
+        self.assertIn("따뜻한 어쿠스틱 분위기", prompt)
+
     def test_video_icon_folder_listing_and_path_validation(self) -> None:
         icon_dir = Path(self.temp_dir.name) / "icons"
         icon_dir.mkdir()

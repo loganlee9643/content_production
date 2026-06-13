@@ -1137,6 +1137,67 @@ def _gemini_image(prompt: str, aspect_ratio: str) -> tuple[bytes, str]:
     raise RuntimeError("Gemini API response did not contain an image.")
 
 
+THUMBNAIL_COPY_SYSTEM = """
+You are a Korean YouTube thumbnail copywriter for music and playlist channels.
+Return one valid JSON object only, without Markdown or commentary.
+
+Create concise thumbnail copy that earns attention through relevance, curiosity,
+specific mood, and clear listening context. Do not use deceptive clickbait,
+fabricated popularity claims, fake urgency, guarantees, or unsupported numbers.
+
+Return exactly these string fields:
+- headline: the strongest main phrase, preferably 8-18 Korean characters
+- subheadline: a supporting phrase, preferably 12-28 Korean characters
+- accent: a short category or mood label, preferably 2-10 Korean characters
+
+Make the three phrases complementary rather than repetitive.
+Avoid quotation marks, hashtags, emojis, and ending punctuation.
+"""
+
+
+def run_thumbnail_copy_generation(
+    job_id: str,
+    album_id: str,
+    instruction: str,
+) -> None:
+    try:
+        set_job_running(job_id)
+        album = db.get_one("albums", album_id)
+        if not album:
+            raise ValueError("Album not found")
+        tracks = db.fetch_all(
+            "SELECT title, concept FROM tracks WHERE album_id = ? ORDER BY sequence",
+            (album_id,),
+        )
+        user = json.dumps(
+            {
+                "album_title": album.get("title"),
+                "artist_name": album.get("artist_name"),
+                "description": album.get("description"),
+                "genre": album.get("genre"),
+                "mood": album.get("mood"),
+                "keywords": album.get("keywords"),
+                "style_prompt": album.get("style_prompt"),
+                "track_titles": [track.get("title") for track in tracks[:12]],
+                "track_concepts": [track.get("concept") for track in tracks[:6]],
+                "user_direction": instruction,
+                "language": "Korean",
+            },
+            ensure_ascii=False,
+        )
+        result = _extract_json(_gemini_text(THUMBNAIL_COPY_SYSTEM, user))
+        copy = {}
+        limits = {"headline": 40, "subheadline": 60, "accent": 20}
+        for key, limit in limits.items():
+            value = re.sub(r"\s+", " ", str(result.get(key) or "")).strip()
+            if not value:
+                raise ValueError(f"Gemini thumbnail copy did not include {key}")
+            copy[key] = value[:limit]
+        set_job_succeeded(job_id, copy)
+    except Exception as exc:
+        set_job_failed(job_id, exc, "THUMBNAIL_COPY_GENERATION_FAILED")
+
+
 SUNO_ALBUM_PLAN_SYSTEM = """
 You are an expert music director, lyricist, and prompt engineer for Suno Custom Mode.
 Return one valid JSON object only. Do not use Markdown fences or add commentary.

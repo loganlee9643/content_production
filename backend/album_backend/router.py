@@ -788,6 +788,31 @@ async def list_thumbnails(album_id: str):
 
 
 @router.post(
+    "/albums/{album_id}/thumbnail-copy/generate",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def generate_thumbnail_copy(
+    album_id: str,
+    payload: schemas.ThumbnailCopyGenerateRequest,
+    background_tasks: BackgroundTasks,
+):
+    require("albums", album_id, "Album")
+    job = services.create_job(
+        "thumbnail_copy_generate",
+        "album",
+        album_id,
+        dump(payload),
+    )
+    background_tasks.add_task(
+        services.run_thumbnail_copy_generation,
+        job["id"],
+        album_id,
+        payload.instruction,
+    )
+    return data({"job_id": job["id"], "status": job["status"]})
+
+
+@router.post(
     "/albums/{album_id}/thumbnails",
     status_code=status.HTTP_201_CREATED,
 )

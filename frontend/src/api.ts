@@ -414,6 +414,11 @@ export const api = {
       `/albums/${albumId}/thumbnail-backgrounds/generate`,
       { method: "POST", body: json({ ...payload, track_id: null }) },
     ),
+  generateThumbnailCopy: (albumId: string, instruction: string) =>
+    request<{ job_id: string; status: string }>(
+      `/albums/${albumId}/thumbnail-copy/generate`,
+      { method: "POST", body: json({ instruction }) },
+    ),
   uploadThumbnailBackground: async (albumId: string, file: File) => {
     const response = await fetch(
       `${API_BASE}/albums/${albumId}/thumbnail-backgrounds/upload?filename=${encodeURIComponent(file.name)}`,

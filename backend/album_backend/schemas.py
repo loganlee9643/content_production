@@ -191,6 +191,10 @@ class ThumbnailUpdate(BaseModel):
     design: ThumbnailDesign | None = None
 
 
+class ThumbnailCopyGenerateRequest(BaseModel):
+    instruction: str = Field(default="", max_length=1000)
+
+
 class VideoRenderRequest(BaseModel):
     mode: Literal["static_loop", "animated_image", "album_mix"] = "static_loop"
     track_id: str

@@ -3183,9 +3183,14 @@ const defaultThumbnailDesign: ThumbnailDesign = {
   layers: [],
 };
 
+function createThumbnailLayerId() {
+  return globalThis.crypto?.randomUUID?.()
+    || `layer-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 function newThumbnailTextLayer(): ThumbnailTextLayer {
   return {
-    id: crypto.randomUUID(),
+    id: createThumbnailLayerId(),
     type: "text",
     text: "새로운 플레이리스트",
     x: 50,
@@ -3208,7 +3213,7 @@ function newThumbnailTextLayer(): ThumbnailTextLayer {
 
 function newThumbnailIconLayer(): ThumbnailIconLayer {
   return {
-    id: crypto.randomUUID(),
+    id: createThumbnailLayerId(),
     type: "icon",
     icon_image: "",
     icon: "♪",
@@ -3219,6 +3224,56 @@ function newThumbnailIconLayer(): ThumbnailIconLayer {
     rotation: 0,
     opacity: 1,
   };
+}
+
+function aiThumbnailCopyLayers(copy: {
+  headline: string;
+  subheadline: string;
+  accent: string;
+}): ThumbnailTextLayer[] {
+  return [
+    {
+      ...newThumbnailTextLayer(),
+      id: "ai-copy-headline",
+      text: copy.headline,
+      x: 46,
+      y: 48,
+      width: 78,
+      font_size: 96,
+      align: "left",
+      stroke_width: 6,
+      padding: 8,
+    },
+    {
+      ...newThumbnailTextLayer(),
+      id: "ai-copy-subheadline",
+      text: copy.subheadline,
+      x: 46,
+      y: 65,
+      width: 72,
+      font_size: 42,
+      color: "#ffe0b8",
+      align: "left",
+      stroke_width: 3,
+      padding: 6,
+    },
+    {
+      ...newThumbnailTextLayer(),
+      id: "ai-copy-accent",
+      text: copy.accent,
+      x: 18,
+      y: 18,
+      width: 24,
+      font_size: 34,
+      color: "#2b0b00",
+      align: "center",
+      stroke_width: 0,
+      shadow: false,
+      background_color: "#ffb15e",
+      background_opacity: 0.95,
+      padding: 10,
+    },
+  ];
 }
 
 function ThumbnailPage() {
@@ -3244,10 +3299,13 @@ function ThumbnailPage() {
   const [selectedLayerId, setSelectedLayerId] = useState("");
   const [prompt, setPrompt] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
+  const [copyDirection, setCopyDirection] = useState("");
+  const [copyJobId, setCopyJobId] = useState<string | null>(null);
   const [renderedAssetId, setRenderedAssetId] = useState("");
   const dragging = useRef<string | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const job = useJob(jobId);
+  const copyJob = useJob(copyJobId);
 
   const openThumbnail = (thumbnail: Thumbnail) => {
     setThumbnailId(thumbnail.id);
@@ -3271,6 +3329,27 @@ function ThumbnailPage() {
       setJobId(null);
     }
   }, [job.data?.status, albumId, queryClient]);
+
+  useEffect(() => {
+    if (copyJob.data?.status !== "succeeded" || !copyJob.data.result) return;
+    const result = copyJob.data.result as Record<string, unknown>;
+    const copy = {
+      headline: String(result.headline || ""),
+      subheadline: String(result.subheadline || ""),
+      accent: String(result.accent || ""),
+    };
+    if (!copy.headline || !copy.subheadline || !copy.accent) return;
+    const generated = aiThumbnailCopyLayers(copy);
+    setDesign((current) => ({
+      ...current,
+      layers: [
+        ...current.layers.filter((layer) => !layer.id.startsWith("ai-copy-")),
+        ...generated,
+      ],
+    }));
+    setSelectedLayerId(generated[0].id);
+    setCopyJobId(null);
+  }, [copyJob.data?.status, copyJob.data?.result]);
 
   const createNew = () => {
     setThumbnailId("");
@@ -3329,6 +3408,10 @@ function ThumbnailPage() {
       candidate_count: 2,
     }),
     onSuccess: (result) => setJobId(result.job_id),
+  });
+  const generateCopy = useMutation({
+    mutationFn: () => api.generateThumbnailCopy(albumId, copyDirection),
+    onSuccess: (result) => setCopyJobId(result.job_id),
   });
   const upload = useMutation({
     mutationFn: (file: File) => api.uploadThumbnailBackground(albumId, file),
@@ -3400,7 +3483,8 @@ function ThumbnailPage() {
         )}
       />
       <JobPanel job={job.data} />
-      <ErrorNotice error={save.error || render.error || generate.error || upload.error || remove.error} />
+      <JobPanel job={copyJob.data} />
+      <ErrorNotice error={save.error || render.error || generate.error || generateCopy.error || upload.error || remove.error} />
       <div className="thumbnail-studio">
         <aside className="panel thumbnail-library">
           <div className="section-heading"><div><small>DOCUMENTS</small><h3>썸네일 목록</h3></div></div>
@@ -3437,9 +3521,25 @@ function ThumbnailPage() {
           <div className="thumbnail-toolbar">
             <input value={name} onChange={(event) => setName(event.target.value)} aria-label="썸네일 이름" />
             <div>
+              <Button
+                variant="secondary"
+                loading={generateCopy.isPending || Boolean(copyJobId)}
+                icon={<Sparkles size={15} />}
+                onClick={() => generateCopy.mutate()}
+              >
+                AI 문구
+              </Button>
               <Button variant="ghost" icon={<Plus size={15} />} onClick={() => addLayer(newThumbnailTextLayer())}>문자열</Button>
               <Button variant="ghost" icon={<Plus size={15} />} onClick={() => addLayer(newThumbnailIconLayer())}>아이콘</Button>
             </div>
+          </div>
+          <div className="thumbnail-copy-direction">
+            <input
+              value={copyDirection}
+              onChange={(event) => setCopyDirection(event.target.value)}
+              placeholder="AI 문구 방향: 예) 퇴근 후 듣는 따뜻한 어쿠스틱 감성"
+            />
+            <span>비워 두면 앨범 제목, 장르, 분위기와 트랙 정보를 자동으로 사용합니다.</span>
           </div>
           <div
             ref={canvasRef}
