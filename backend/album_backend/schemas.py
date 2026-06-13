@@ -130,6 +130,67 @@ class ImageComposeRequest(BaseModel):
     visualizer_style: Literal["bars", "wave", "dots"] = "bars"
 
 
+class ThumbnailTextLayer(BaseModel):
+    id: str
+    type: Literal["text"] = "text"
+    text: str = ""
+    x: float = Field(default=50, ge=0, le=100)
+    y: float = Field(default=50, ge=0, le=100)
+    width: float = Field(default=70, ge=5, le=100)
+    font_family: str = "malgun"
+    font_size: int = Field(default=72, ge=12, le=240)
+    color: str = "#ffffff"
+    align: Literal["left", "center", "right"] = "center"
+    stroke_color: str = "#000000"
+    stroke_width: int = Field(default=3, ge=0, le=20)
+    shadow: bool = True
+    background_color: str = "#000000"
+    background_opacity: float = Field(default=0, ge=0, le=1)
+    padding: int = Field(default=12, ge=0, le=80)
+    rotation: float = Field(default=0, ge=-180, le=180)
+    opacity: float = Field(default=1, ge=0, le=1)
+
+
+class ThumbnailIconLayer(BaseModel):
+    id: str
+    type: Literal["icon"] = "icon"
+    icon_image: str = ""
+    icon: str = ""
+    x: float = Field(default=50, ge=0, le=100)
+    y: float = Field(default=50, ge=0, le=100)
+    size: int = Field(default=96, ge=16, le=500)
+    color: str = "#ffffff"
+    rotation: float = Field(default=0, ge=-180, le=180)
+    opacity: float = Field(default=1, ge=0, le=1)
+
+
+ThumbnailLayer = ThumbnailTextLayer | ThumbnailIconLayer
+
+
+class ThumbnailDesign(BaseModel):
+    width: int = Field(default=1280, ge=320, le=3840)
+    height: int = Field(default=720, ge=180, le=2160)
+    brightness: float = Field(default=0, ge=-100, le=100)
+    contrast: float = Field(default=0, ge=-100, le=100)
+    saturation: float = Field(default=0, ge=-100, le=100)
+    blur: float = Field(default=0, ge=0, le=30)
+    overlay_color: str = "#000000"
+    overlay_opacity: float = Field(default=0.15, ge=0, le=1)
+    layers: list[ThumbnailLayer] = Field(default_factory=list)
+
+
+class ThumbnailCreate(BaseModel):
+    name: str = Field(default="새 썸네일", min_length=1, max_length=100)
+    background_asset_id: str | None = None
+    design: ThumbnailDesign = Field(default_factory=ThumbnailDesign)
+
+
+class ThumbnailUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    background_asset_id: str | None = None
+    design: ThumbnailDesign | None = None
+
+
 class VideoRenderRequest(BaseModel):
     mode: Literal["static_loop", "animated_image", "album_mix"] = "static_loop"
     track_id: str

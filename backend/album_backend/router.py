@@ -710,6 +710,167 @@ async def list_images(album_id: str):
     )
 
 
+@router.post(
+    "/albums/{album_id}/thumbnail-backgrounds/generate",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def generate_thumbnail_backgrounds(
+    album_id: str,
+    payload: schemas.ImageGenerateRequest,
+    background_tasks: BackgroundTasks,
+):
+    require("albums", album_id, "Album")
+    values = dump(payload)
+    job = services.create_job("thumbnail_background_generate", "album", album_id, values)
+    background_tasks.add_task(
+        services.run_image_generation,
+        job["id"],
+        album_id,
+        payload.track_id,
+        payload.instruction,
+        payload.aspect_ratio,
+        payload.candidate_count,
+        "thumbnail_background",
+    )
+    return data({"job_id": job["id"], "status": job["status"]})
+
+
+@router.post(
+    "/albums/{album_id}/thumbnail-backgrounds/upload",
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_thumbnail_background(
+    album_id: str,
+    request: Request,
+    filename: str = "thumbnail-background.png",
+):
+    require("albums", album_id, "Album")
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Request body is empty")
+    if len(body) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image exceeds 20 MB")
+    return data(
+        services.save_uploaded_asset(
+            album_id,
+            body,
+            filename,
+            request.headers.get("content-type", "application/octet-stream"),
+            "thumbnail_background",
+        )
+    )
+
+
+@router.get("/albums/{album_id}/thumbnail-backgrounds")
+async def list_thumbnail_backgrounds(album_id: str):
+    require("albums", album_id, "Album")
+    return data(
+        db.fetch_all(
+            """
+            SELECT * FROM assets
+             WHERE album_id = ? AND type = 'thumbnail_background'
+             ORDER BY created_at DESC
+            """,
+            (album_id,),
+        )
+    )
+
+
+@router.get("/albums/{album_id}/thumbnails")
+async def list_thumbnails(album_id: str):
+    require("albums", album_id, "Album")
+    return data(
+        db.fetch_all(
+            "SELECT * FROM thumbnails WHERE album_id = ? ORDER BY updated_at DESC",
+            (album_id,),
+        )
+    )
+
+
+@router.post(
+    "/albums/{album_id}/thumbnails",
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_thumbnail(album_id: str, payload: schemas.ThumbnailCreate):
+    require("albums", album_id, "Album")
+    if payload.background_asset_id:
+        background = require("assets", payload.background_asset_id, "Background asset")
+        if background["album_id"] != album_id:
+            raise HTTPException(status_code=409, detail="Background belongs to another album")
+    now = db.now_iso()
+    return data(
+        db.insert(
+            "thumbnails",
+            {
+                "id": db.new_id(),
+                "album_id": album_id,
+                "name": payload.name.strip(),
+                "background_asset_id": payload.background_asset_id,
+                "design_json": db.encode_json(dump(payload.design)),
+                "rendered_asset_id": None,
+                "created_at": now,
+                "updated_at": now,
+            },
+        )
+    )
+
+
+@router.patch("/thumbnails/{thumbnail_id}")
+async def update_thumbnail(
+    thumbnail_id: str,
+    payload: schemas.ThumbnailUpdate,
+):
+    thumbnail = require("thumbnails", thumbnail_id, "Thumbnail")
+    values = dump(payload, exclude_none=True)
+    if "background_asset_id" in values:
+        background = require("assets", values["background_asset_id"], "Background asset")
+        if background["album_id"] != thumbnail["album_id"]:
+            raise HTTPException(status_code=409, detail="Background belongs to another album")
+    if "design" in values:
+        values["design_json"] = db.encode_json(values.pop("design"))
+    values["updated_at"] = db.now_iso()
+    return data(db.update("thumbnails", thumbnail_id, values))
+
+
+@router.delete("/thumbnails/{thumbnail_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_thumbnail(thumbnail_id: str):
+    require("thumbnails", thumbnail_id, "Thumbnail")
+    db.delete("thumbnails", thumbnail_id)
+
+
+@router.post("/thumbnails/{thumbnail_id}/render", status_code=status.HTTP_201_CREATED)
+async def render_thumbnail(thumbnail_id: str):
+    thumbnail = require("thumbnails", thumbnail_id, "Thumbnail")
+    if not thumbnail.get("background_asset_id"):
+        raise HTTPException(status_code=409, detail="Select a thumbnail background first")
+    background = require("assets", thumbnail["background_asset_id"], "Background asset")
+    source = (db.STORAGE_DIR / background["storage_key"]).resolve()
+    relative = (
+        Path("albums")
+        / thumbnail["album_id"]
+        / "thumbnails"
+        / f"{thumbnail_id}-{db.new_id()}.png"
+    )
+    destination = db.STORAGE_DIR / relative
+    services.render_thumbnail(source, destination, thumbnail["design"])
+    asset = services.create_asset(
+        album_id=thumbnail["album_id"],
+        track_id=None,
+        generation_id=None,
+        asset_type="thumbnail",
+        path=destination,
+        original_name=f"{thumbnail['name']}.png",
+        content_type="image/png",
+        metadata={"thumbnail_id": thumbnail_id, "design": thumbnail["design"]},
+    )
+    db.update(
+        "thumbnails",
+        thumbnail_id,
+        {"rendered_asset_id": asset["id"], "updated_at": db.now_iso()},
+    )
+    return data(asset)
+
+
 @router.post("/albums/{album_id}/covers/{asset_id}/select")
 async def select_cover(album_id: str, asset_id: str):
     require("albums", album_id, "Album")

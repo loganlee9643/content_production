@@ -138,6 +138,16 @@ def init_db() -> None:
         template_id TEXT NOT NULL REFERENCES video_templates(id) ON DELETE CASCADE,
         updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS thumbnails (
+        id TEXT PRIMARY KEY,
+        album_id TEXT NOT NULL REFERENCES albums(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        background_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+        design_json TEXT NOT NULL DEFAULT '{}',
+        rendered_asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_album_sequence
         ON tracks(album_id, sequence);
     CREATE INDEX IF NOT EXISTS idx_jobs_resource
@@ -146,6 +156,8 @@ def init_db() -> None:
         ON generations(track_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_video_templates_album
         ON video_templates(album_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_thumbnails_album
+        ON thumbnails(album_id, updated_at DESC);
     """
     with _LOCK, closing(connect()) as connection:
         connection.executescript(schema)

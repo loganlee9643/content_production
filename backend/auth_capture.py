@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import socket
 import subprocess
 import time
@@ -214,9 +213,10 @@ def capture_auth_with_browser(
     *,
     profile_dir: Path,
     timeout_sec: float = 600.0,
-    force_fresh_login: bool = False,
+    wait_for_browser_close: bool = False,
 ) -> SunoAuth:
     try:
+        from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise SunoAuthError(
@@ -272,32 +272,52 @@ def capture_auth_with_browser(
                     return
 
             context.on("response", capture_clerk_auth)
-            if force_fresh_login:
-                context.clear_cookies(domain=re.compile(r"(^|\.)suno\.com$"))
-                page.goto(SUNO_CREATE_URL, wait_until="domcontentloaded", timeout=60000)
-            elif "suno.com" not in page.url:
+            if "suno.com" not in page.url:
                 page.goto(SUNO_CREATE_URL, wait_until="domcontentloaded", timeout=60000)
             else:
                 page.reload(wait_until="domcontentloaded", timeout=60000)
-            print("Complete Suno login in the opened Chrome or Edge window.")
-            print("Authentication will be saved automatically after login is detected.")
+            if wait_for_browser_close:
+                print("Review or complete Suno login in the opened browser window.")
+                print("When ready, close that browser window to continue.")
+            else:
+                print("Complete Suno login in the opened Chrome or Edge window.")
+                print("Authentication will be saved automatically after login is detected.")
             last_error = ""
+            latest_auth: SunoAuth | None = None
+            login_detected = False
             while time.monotonic() < deadline:
                 if captured_auth:
-                    return captured_auth[0]
-                cookies = context.cookies()
-                cookie_header = _cookie_header(cookies)
+                    latest_auth = captured_auth[0]
+                if browser_process.poll() is not None or page.is_closed():
+                    if latest_auth is not None:
+                        return latest_auth
+                    raise SunoAuthError(
+                        "The login browser was closed before Suno login was detected."
+                    )
                 try:
+                    cookies = context.cookies()
+                    cookie_header = _cookie_header(cookies)
                     if cookie_header:
                         session_id = find_active_session(cookie_header)
-                        return SunoAuth(
+                        latest_auth = SunoAuth(
                             session_id=session_id,
                             cookie=cookie_header,
                             captured_at=time.time(),
                         )
-                except (requests.RequestException, ValueError, SunoAuthError) as exc:
+                except (
+                    requests.RequestException,
+                    ValueError,
+                    SunoAuthError,
+                    PlaywrightError,
+                ) as exc:
                     last_error = str(exc)
-                page.wait_for_timeout(2000)
+                if latest_auth is not None:
+                    if not wait_for_browser_close:
+                        return latest_auth
+                    if not login_detected:
+                        print("Suno login detected. Close the browser window when ready.")
+                        login_detected = True
+                time.sleep(1)
             detail = f" Last error: {last_error}" if last_error else ""
             raise SunoAuthError(f"Suno login was not detected in time.{detail}")
     finally:

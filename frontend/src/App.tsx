@@ -59,6 +59,11 @@ import {
   iconAssetUrl,
   Job,
   lyricsUrl,
+  Thumbnail,
+  ThumbnailDesign,
+  ThumbnailIconLayer,
+  ThumbnailLayer,
+  ThumbnailTextLayer,
   Track,
 } from "./api";
 
@@ -69,6 +74,8 @@ const qk = {
   generations: (id: string) => ["tracks", id, "generations"] as const,
   covers: (id: string) => ["albums", id, "covers"] as const,
   templatePreviews: (id: string) => ["albums", id, "template-previews"] as const,
+  thumbnailBackgrounds: (id: string) => ["albums", id, "thumbnail-backgrounds"] as const,
+  thumbnails: (id: string) => ["albums", id, "thumbnails"] as const,
   suno: ["system", "suno"] as const,
   job: (id: string) => ["jobs", id] as const,
 };
@@ -258,6 +265,7 @@ function AppShell({ children }: { children: ReactNode }) {
         { to: `/albums/${albumId}/plan`, label: "앨범 만들기", icon: <Disc3 size={19} /> },
         { to: `/albums/${albumId}/tracks`, label: "노래 만들기", icon: <Zap size={19} /> },
         { to: `/albums/${albumId}/video`, label: "루프 영상 만들기", icon: <Film size={19} /> },
+        { to: `/albums/${albumId}/thumbnail`, label: "썸네일 만들기", icon: <ImageIcon size={19} /> },
         { to: `/albums/${albumId}/album-video`, label: "전체 영상 만들기", icon: <Clapperboard size={19} /> },
         { to: `/albums/${albumId}/export`, label: "결과 · 내보내기", icon: <Archive size={19} /> },
       ]
@@ -3163,6 +3171,412 @@ function formatDuration(value: number) {
     : `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+const defaultThumbnailDesign: ThumbnailDesign = {
+  width: 1280,
+  height: 720,
+  brightness: 0,
+  contrast: 0,
+  saturation: 0,
+  blur: 0,
+  overlay_color: "#000000",
+  overlay_opacity: 0.15,
+  layers: [],
+};
+
+function newThumbnailTextLayer(): ThumbnailTextLayer {
+  return {
+    id: crypto.randomUUID(),
+    type: "text",
+    text: "새로운 플레이리스트",
+    x: 50,
+    y: 48,
+    width: 72,
+    font_family: "malgun",
+    font_size: 82,
+    color: "#ffffff",
+    align: "center",
+    stroke_color: "#000000",
+    stroke_width: 4,
+    shadow: true,
+    background_color: "#000000",
+    background_opacity: 0,
+    padding: 12,
+    rotation: 0,
+    opacity: 1,
+  };
+}
+
+function newThumbnailIconLayer(): ThumbnailIconLayer {
+  return {
+    id: crypto.randomUUID(),
+    type: "icon",
+    icon_image: "",
+    icon: "♪",
+    x: 82,
+    y: 18,
+    size: 110,
+    color: "#ffffff",
+    rotation: 0,
+    opacity: 1,
+  };
+}
+
+function ThumbnailPage() {
+  const albumId = useAlbumId();
+  const queryClient = useQueryClient();
+  const album = useAlbum(albumId);
+  const thumbnails = useQuery({
+    queryKey: qk.thumbnails(albumId),
+    queryFn: () => api.listThumbnails(albumId),
+  });
+  const backgrounds = useQuery({
+    queryKey: qk.thumbnailBackgrounds(albumId),
+    queryFn: () => api.listThumbnailBackgrounds(albumId),
+  });
+  const icons = useQuery({
+    queryKey: ["system", "video-icons"],
+    queryFn: api.listVideoIcons,
+  });
+  const [thumbnailId, setThumbnailId] = useState("");
+  const [name, setName] = useState("새 썸네일");
+  const [backgroundId, setBackgroundId] = useState("");
+  const [design, setDesign] = useState<ThumbnailDesign>(defaultThumbnailDesign);
+  const [selectedLayerId, setSelectedLayerId] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [renderedAssetId, setRenderedAssetId] = useState("");
+  const dragging = useRef<string | null>(null);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const job = useJob(jobId);
+
+  const openThumbnail = (thumbnail: Thumbnail) => {
+    setThumbnailId(thumbnail.id);
+    setName(thumbnail.name);
+    setBackgroundId(thumbnail.background_asset_id || "");
+    setDesign({ ...defaultThumbnailDesign, ...thumbnail.design });
+    setSelectedLayerId(thumbnail.design.layers[0]?.id || "");
+    setRenderedAssetId(thumbnail.rendered_asset_id || "");
+  };
+
+  useEffect(() => {
+    if (!thumbnails.data?.length) return;
+    const selected = thumbnails.data.find((item) => item.id === thumbnailId)
+      || thumbnails.data[0];
+    if (selected.id !== thumbnailId) openThumbnail(selected);
+  }, [thumbnails.data, thumbnailId]);
+
+  useEffect(() => {
+    if (job.data?.status === "succeeded") {
+      queryClient.invalidateQueries({ queryKey: qk.thumbnailBackgrounds(albumId) });
+      setJobId(null);
+    }
+  }, [job.data?.status, albumId, queryClient]);
+
+  const createNew = () => {
+    setThumbnailId("");
+    setName("새 썸네일");
+    setBackgroundId("");
+    const firstLayer = newThumbnailTextLayer();
+    setDesign({ ...defaultThumbnailDesign, layers: [firstLayer] });
+    setSelectedLayerId(firstLayer.id);
+    setRenderedAssetId("");
+  };
+
+  const persist = async () => {
+    if (thumbnailId) {
+      return api.updateThumbnail(thumbnailId, {
+        name,
+        ...(backgroundId ? { background_asset_id: backgroundId } : {}),
+        design,
+      });
+    }
+    return api.createThumbnail(albumId, {
+      name,
+      background_asset_id: backgroundId || null,
+      design,
+    });
+  };
+
+  const save = useMutation({
+    mutationFn: persist,
+    onSuccess: (saved) => {
+      setThumbnailId(saved.id);
+      queryClient.invalidateQueries({ queryKey: qk.thumbnails(albumId) });
+    },
+  });
+  const render = useMutation({
+    mutationFn: async () => {
+      const saved = await persist();
+      setThumbnailId(saved.id);
+      return api.renderThumbnail(saved.id);
+    },
+    onSuccess: (asset) => {
+      setRenderedAssetId(asset.id);
+      queryClient.invalidateQueries({ queryKey: qk.thumbnails(albumId) });
+    },
+  });
+  const remove = useMutation({
+    mutationFn: () => api.deleteThumbnail(thumbnailId),
+    onSuccess: () => {
+      createNew();
+      queryClient.invalidateQueries({ queryKey: qk.thumbnails(albumId) });
+    },
+  });
+  const generate = useMutation({
+    mutationFn: () => api.generateThumbnailBackgrounds(albumId, {
+      instruction: prompt,
+      aspect_ratio: "16:9",
+      candidate_count: 2,
+    }),
+    onSuccess: (result) => setJobId(result.job_id),
+  });
+  const upload = useMutation({
+    mutationFn: (file: File) => api.uploadThumbnailBackground(albumId, file),
+    onSuccess: (asset) => {
+      setBackgroundId(asset.id);
+      queryClient.invalidateQueries({ queryKey: qk.thumbnailBackgrounds(albumId) });
+    },
+  });
+
+  const selectedLayer = design.layers.find((layer) => layer.id === selectedLayerId);
+  const updateLayer = (id: string, patch: Partial<ThumbnailLayer>) => {
+    setDesign((current) => ({
+      ...current,
+      layers: current.layers.map((layer) => (
+        layer.id === id ? { ...layer, ...patch } as ThumbnailLayer : layer
+      )),
+    }));
+  };
+  const addLayer = (layer: ThumbnailLayer) => {
+    setDesign((current) => ({ ...current, layers: [...current.layers, layer] }));
+    setSelectedLayerId(layer.id);
+  };
+  const removeLayer = (id: string) => {
+    setDesign((current) => ({
+      ...current,
+      layers: current.layers.filter((layer) => layer.id !== id),
+    }));
+    setSelectedLayerId("");
+  };
+  const moveLayer = (direction: -1 | 1) => {
+    if (!selectedLayerId) return;
+    setDesign((current) => {
+      const layers = [...current.layers];
+      const index = layers.findIndex((layer) => layer.id === selectedLayerId);
+      const next = Math.max(0, Math.min(layers.length - 1, index + direction));
+      if (index < 0 || index === next) return current;
+      [layers[index], layers[next]] = [layers[next], layers[index]];
+      return { ...current, layers };
+    });
+  };
+  const dragLayer = (event: ReactPointerEvent, layerId: string) => {
+    dragging.current = layerId;
+    setSelectedLayerId(layerId);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveDraggedLayer = (event: ReactPointerEvent) => {
+    if (!dragging.current || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    updateLayer(dragging.current, {
+      x: Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100)),
+      y: Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100)),
+    });
+  };
+
+  if (album.isLoading || thumbnails.isLoading) return <LoadingPage />;
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="THUMBNAIL STUDIO"
+        title="썸네일 만들기"
+        description="AI 배경 위에 여러 문자열과 아이콘을 배치하고 1280×720 PNG로 저장합니다."
+        actions={(
+          <>
+            <Button variant="secondary" icon={<Plus size={17} />} onClick={createNew}>새 썸네일</Button>
+            <Button loading={save.isPending} icon={<Save size={17} />} onClick={() => save.mutate()}>저장</Button>
+            <Button loading={render.isPending} disabled={!backgroundId} icon={<Download size={17} />} onClick={() => render.mutate()}>PNG 만들기</Button>
+          </>
+        )}
+      />
+      <JobPanel job={job.data} />
+      <ErrorNotice error={save.error || render.error || generate.error || upload.error || remove.error} />
+      <div className="thumbnail-studio">
+        <aside className="panel thumbnail-library">
+          <div className="section-heading"><div><small>DOCUMENTS</small><h3>썸네일 목록</h3></div></div>
+          <div className="thumbnail-document-list">
+            {(thumbnails.data || []).map((item) => (
+              <button key={item.id} className={item.id === thumbnailId ? "active" : ""} onClick={() => openThumbnail(item)}>
+                <ImageIcon size={16} /><span>{item.name}</span>
+              </button>
+            ))}
+          </div>
+          <div className="thumbnail-prompt">
+            <Field label="AI 배경 설명">
+              <textarea rows={4} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="예: 새벽 도시의 네온 불빛, 감성적인 로파이 분위기" />
+            </Field>
+            <Button loading={generate.isPending || Boolean(jobId)} icon={<WandSparkles size={16} />} onClick={() => generate.mutate()}>배경 2장 생성</Button>
+            <label className="button secondary upload-button">
+              <Upload size={16} /> 이미지 업로드
+              <input type="file" accept="image/*" hidden onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) upload.mutate(file);
+              }} />
+            </label>
+          </div>
+          <div className="thumbnail-background-grid">
+            {(backgrounds.data || []).map((asset) => (
+              <button key={asset.id} className={asset.id === backgroundId ? "active" : ""} onClick={() => setBackgroundId(asset.id)}>
+                <img src={assetUrl(asset.id)} alt={asset.original_name} />
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <section className="thumbnail-canvas-column">
+          <div className="thumbnail-toolbar">
+            <input value={name} onChange={(event) => setName(event.target.value)} aria-label="썸네일 이름" />
+            <div>
+              <Button variant="ghost" icon={<Plus size={15} />} onClick={() => addLayer(newThumbnailTextLayer())}>문자열</Button>
+              <Button variant="ghost" icon={<Plus size={15} />} onClick={() => addLayer(newThumbnailIconLayer())}>아이콘</Button>
+            </div>
+          </div>
+          <div
+            ref={canvasRef}
+            className="thumbnail-canvas"
+            onPointerMove={moveDraggedLayer}
+            onPointerUp={() => { dragging.current = null; }}
+            onPointerCancel={() => { dragging.current = null; }}
+          >
+            {backgroundId ? (
+              <img
+                className="thumbnail-background"
+                src={assetUrl(backgroundId)}
+                alt=""
+                draggable={false}
+                style={{
+                  filter: `brightness(${1 + design.brightness / 100}) contrast(${1 + design.contrast / 100}) saturate(${1 + design.saturation / 100}) blur(${design.blur}px)`,
+                }}
+              />
+            ) : <div className="thumbnail-empty"><ImageIcon size={42} /><span>왼쪽에서 배경을 생성하거나 선택하세요.</span></div>}
+            <div className="thumbnail-overlay" style={{ background: hexToRgba(design.overlay_color, design.overlay_opacity) }} />
+            {design.layers.map((layer) => (
+              <div
+                key={layer.id}
+                className={`thumbnail-layer thumbnail-${layer.type} ${selectedLayerId === layer.id ? "selected" : ""}`}
+                style={{
+                  left: `${layer.x}%`,
+                  top: `${layer.y}%`,
+                  opacity: layer.opacity,
+                  transform: `translate(-50%, -50%) rotate(${layer.rotation}deg)`,
+                  ...(layer.type === "text" ? {
+                    width: `${layer.width}%`,
+                    color: layer.color,
+                    fontFamily: videoFonts[layer.font_family] || videoFonts.malgun,
+                    fontSize: `${layer.font_size / 12.8}cqw`,
+                    textAlign: layer.align,
+                    WebkitTextStroke: `${Math.max(0.5, layer.stroke_width / 5)}px ${layer.stroke_color}`,
+                    textShadow: layer.shadow ? "0 4px 12px rgba(0,0,0,.7)" : "none",
+                    background: hexToRgba(layer.background_color, layer.background_opacity),
+                    padding: `${layer.padding / 12.8}cqw`,
+                  } : {
+                    color: layer.color,
+                    fontSize: `${layer.size / 12.8}cqw`,
+                    width: layer.icon_image ? `${layer.size / 12.8}cqw` : undefined,
+                    height: layer.icon_image ? `${layer.size / 12.8}cqw` : undefined,
+                  }),
+                }}
+                onPointerDown={(event) => dragLayer(event, layer.id)}
+              >
+                {layer.type === "text"
+                  ? layer.text
+                  : layer.icon_image
+                    ? <img src={iconAssetUrl(layer.icon_image)} alt="" draggable={false} />
+                    : layer.icon}
+              </div>
+            ))}
+          </div>
+          {renderedAssetId && (
+            <a className="button primary thumbnail-download" href={assetUrl(renderedAssetId)} download>
+              <Download size={17} /> 완성된 PNG 다운로드
+            </a>
+          )}
+        </section>
+
+        <aside className="panel thumbnail-inspector">
+          <div className="section-heading"><div><small>LAYERS</small><h3>레이어 편집</h3></div></div>
+          <div className="thumbnail-layer-list">
+            {[...design.layers].reverse().map((layer) => (
+              <button key={layer.id} className={layer.id === selectedLayerId ? "active" : ""} onClick={() => setSelectedLayerId(layer.id)}>
+                {layer.type === "text" ? <FileText size={15} /> : <ImageIcon size={15} />}
+                <span>{layer.type === "text" ? layer.text || "빈 문자열" : layer.icon_image || layer.icon || "아이콘"}</span>
+              </button>
+            ))}
+          </div>
+          {selectedLayer ? (
+            <div className="thumbnail-controls">
+              {selectedLayer.type === "text" ? (
+                <>
+                  <Field label="문자열"><textarea rows={3} value={selectedLayer.text} onChange={(event) => updateLayer(selectedLayer.id, { text: event.target.value })} /></Field>
+                  <div className="two-fields">
+                    <Field label="글꼴"><select value={selectedLayer.font_family} onChange={(event) => updateLayer(selectedLayer.id, { font_family: event.target.value })}>{videoFontOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
+                    <Field label="정렬"><select value={selectedLayer.align} onChange={(event) => updateLayer(selectedLayer.id, { align: event.target.value as ThumbnailTextLayer["align"] })}><option value="left">왼쪽</option><option value="center">가운데</option><option value="right">오른쪽</option></select></Field>
+                  </div>
+                  <div className="two-fields">
+                    <Field label="글자색"><input type="color" value={selectedLayer.color} onChange={(event) => updateLayer(selectedLayer.id, { color: event.target.value })} /></Field>
+                    <Field label="외곽선"><input type="color" value={selectedLayer.stroke_color} onChange={(event) => updateLayer(selectedLayer.id, { stroke_color: event.target.value })} /></Field>
+                  </div>
+                  <Field label={`글자 크기 ${selectedLayer.font_size}`}><input type="range" min={12} max={240} value={selectedLayer.font_size} onChange={(event) => updateLayer(selectedLayer.id, { font_size: Number(event.target.value) })} /></Field>
+                  <Field label={`문자열 너비 ${selectedLayer.width}%`}><input type="range" min={10} max={100} value={selectedLayer.width} onChange={(event) => updateLayer(selectedLayer.id, { width: Number(event.target.value) })} /></Field>
+                  <Field label={`외곽선 두께 ${selectedLayer.stroke_width}`}><input type="range" min={0} max={20} value={selectedLayer.stroke_width} onChange={(event) => updateLayer(selectedLayer.id, { stroke_width: Number(event.target.value) })} /></Field>
+                  <label className="check-row"><input type="checkbox" checked={selectedLayer.shadow} onChange={(event) => updateLayer(selectedLayer.id, { shadow: event.target.checked })} /> 그림자 표시</label>
+                  <div className="two-fields">
+                    <Field label="박스 색상"><input type="color" value={selectedLayer.background_color} onChange={(event) => updateLayer(selectedLayer.id, { background_color: event.target.value })} /></Field>
+                    <Field label={`박스 투명도 ${selectedLayer.background_opacity}`}><input type="number" min={0} max={1} step={0.05} value={selectedLayer.background_opacity} onChange={(event) => updateLayer(selectedLayer.id, { background_opacity: Number(event.target.value) })} /></Field>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <Field label="문자 아이콘"><input value={selectedLayer.icon} onChange={(event) => updateLayer(selectedLayer.id, { icon: event.target.value, icon_image: "" })} /></Field>
+                  <div className="thumbnail-icon-grid">
+                    {(icons.data || []).map((icon) => (
+                      <button key={icon.filename} className={selectedLayer.icon_image === icon.filename ? "active" : ""} onClick={() => updateLayer(selectedLayer.id, { icon_image: icon.filename, icon: "" })}>
+                        <img src={iconAssetUrl(icon.filename)} alt={icon.label} />
+                      </button>
+                    ))}
+                  </div>
+                  <Field label="아이콘 색상"><input type="color" value={selectedLayer.color} onChange={(event) => updateLayer(selectedLayer.id, { color: event.target.value })} /></Field>
+                  <Field label={`아이콘 크기 ${selectedLayer.size}`}><input type="range" min={16} max={500} value={selectedLayer.size} onChange={(event) => updateLayer(selectedLayer.id, { size: Number(event.target.value) })} /></Field>
+                </>
+              )}
+              <Field label={`회전 ${selectedLayer.rotation}°`}><input type="range" min={-180} max={180} value={selectedLayer.rotation} onChange={(event) => updateLayer(selectedLayer.id, { rotation: Number(event.target.value) })} /></Field>
+              <Field label={`투명도 ${selectedLayer.opacity}`}><input type="range" min={0} max={1} step={0.05} value={selectedLayer.opacity} onChange={(event) => updateLayer(selectedLayer.id, { opacity: Number(event.target.value) })} /></Field>
+              <div className="thumbnail-layer-actions">
+                <Button variant="ghost" onClick={() => moveLayer(-1)}>뒤로</Button>
+                <Button variant="ghost" onClick={() => moveLayer(1)}>앞으로</Button>
+                <Button variant="danger" icon={<Trash2 size={15} />} onClick={() => removeLayer(selectedLayer.id)}>삭제</Button>
+              </div>
+            </div>
+          ) : <p className="muted">캔버스나 목록에서 레이어를 선택하세요.</p>}
+          <div className="thumbnail-effects">
+            <h4>배경 효과</h4>
+            {(["brightness", "contrast", "saturation", "blur"] as const).map((key) => (
+              <Field key={key} label={`${({ brightness: "밝기", contrast: "대비", saturation: "채도", blur: "블러" })[key]} ${design[key]}`}>
+                <input type="range" min={key === "blur" ? 0 : -100} max={key === "blur" ? 30 : 100} value={design[key]} onChange={(event) => setDesign({ ...design, [key]: Number(event.target.value) })} />
+              </Field>
+            ))}
+            <div className="two-fields">
+              <Field label="오버레이"><input type="color" value={design.overlay_color} onChange={(event) => setDesign({ ...design, overlay_color: event.target.value })} /></Field>
+              <Field label="투명도"><input type="number" min={0} max={1} step={0.05} value={design.overlay_opacity} onChange={(event) => setDesign({ ...design, overlay_opacity: Number(event.target.value) })} /></Field>
+            </div>
+          </div>
+          {thumbnailId && <Button variant="danger" loading={remove.isPending} onClick={() => remove.mutate()}>썸네일 삭제</Button>}
+        </aside>
+      </div>
+    </>
+  );
+}
+
 function AlbumVideoPage() {
   const albumId = useAlbumId();
   const queryClient = useQueryClient();
@@ -3419,6 +3833,7 @@ function App() {
       <Route path="/albums/:albumId/plan" element={<AppShell><AlbumPlanPage /></AppShell>} />
       <Route path="/albums/:albumId/tracks" element={<AppShell><TrackGenerationPage /></AppShell>} />
       <Route path="/albums/:albumId/video" element={<AppShell><VideoCreationPage /></AppShell>} />
+      <Route path="/albums/:albumId/thumbnail" element={<AppShell><ThumbnailPage /></AppShell>} />
       <Route path="/albums/:albumId/album-video" element={<AppShell><AlbumVideoPage /></AppShell>} />
       <Route path="/albums/:albumId/export" element={<AppShell><ExportPage /></AppShell>} />
       <Route path="*" element={<AppShell><NotFoundPage /></AppShell>} />

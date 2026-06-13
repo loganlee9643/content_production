@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+from PIL import Image
 
 os.environ.setdefault("BASE_URL", "https://studio-api.prod.suno.com")
 
@@ -124,6 +129,50 @@ class AlbumBackendTest(unittest.TestCase):
         services.set_job_succeeded(job["id"], {"ok": True})
         response = asyncio.run(router.get_job(job["id"]))
         self.assertTrue(response["data"]["result"]["ok"])
+
+    def test_thumbnail_document_renders_png_with_text_layers(self) -> None:
+        album = self.create_album()
+        background_path = db.STORAGE_DIR / "thumbnail-background.png"
+        background_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (640, 360), "#552244").save(background_path)
+        background = services.create_asset(
+            album_id=album["id"],
+            track_id=None,
+            generation_id=None,
+            asset_type="thumbnail_background",
+            path=background_path,
+            original_name="thumbnail-background.png",
+            content_type="image/png",
+        )
+        thumbnail = asyncio.run(
+            router.create_thumbnail(
+                album["id"],
+                schemas.ThumbnailCreate(
+                    name="Playlist Thumbnail",
+                    background_asset_id=background["id"],
+                    design=schemas.ThumbnailDesign(
+                        layers=[
+                            schemas.ThumbnailTextLayer(
+                                id="title",
+                                text="PLAY LIST",
+                                font_family="arial",
+                                font_size=80,
+                                x=50,
+                                y=50,
+                            )
+                        ]
+                    ),
+                ),
+            )
+        )["data"]
+
+        rendered = asyncio.run(router.render_thumbnail(thumbnail["id"]))["data"]
+        output = db.STORAGE_DIR / rendered["storage_key"]
+
+        self.assertEqual(rendered["type"], "thumbnail")
+        self.assertTrue(output.is_file())
+        with Image.open(output) as image:
+            self.assertEqual(image.size, (1280, 720))
 
     def test_video_icon_folder_listing_and_path_validation(self) -> None:
         icon_dir = Path(self.temp_dir.name) / "icons"
@@ -521,6 +570,69 @@ class AlbumBackendTest(unittest.TestCase):
         self.assertIn("regenerate_style", lyrics_prompt)
         self.assertIn("[Spoken Word]", lyrics_prompt)
 
+    def test_gemini_text_uses_standalone_rest_client(self) -> None:
+        response = BytesIO(
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [{"text": '{"title":"Test Album"}'}]
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {"GEMINI_API_KEY": "test-key", "GEMINI_MODEL": "test-model"},
+            ),
+            patch.object(services.urllib.request, "urlopen", return_value=response) as urlopen,
+        ):
+            result = services._gemini_text("system", "user")
+
+        self.assertEqual(result, '{"title":"Test Album"}')
+        request = urlopen.call_args.args[0]
+        self.assertIn("/models/test-model:generateContent", request.full_url)
+        payload = json.loads(request.data)
+        self.assertEqual(payload["systemInstruction"]["parts"][0]["text"], "system")
+        self.assertEqual(payload["contents"][0]["parts"][0]["text"], "user")
+
+    def test_gemini_image_decodes_inline_data(self) -> None:
+        image_bytes = b"fake-image"
+        response = BytesIO(
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "inlineData": {
+                                            "mimeType": "image/png",
+                                            "data": base64.b64encode(image_bytes).decode("ascii"),
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+        with (
+            patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}),
+            patch.object(services.urllib.request, "urlopen", return_value=response),
+        ):
+            raw, mime = services._gemini_image("cover art", "16:9")
+
+        self.assertEqual(raw, image_bytes)
+        self.assertEqual(mime, "image/png")
+
     def test_suno_generation_classifies_browser_verification_failure(self) -> None:
         first_error = services.SunoAPIError(
             422,
@@ -662,6 +774,33 @@ class AlbumBackendTest(unittest.TestCase):
         self.assertEqual(auth.session_id, "session-from-saved")
         self.assertEqual(auth.cookie, "__client=saved-client")
 
+    def test_server_force_login_waits_for_browser_close(self) -> None:
+        captured = start_suno_server.SunoAuth(
+            session_id="session-from-browser",
+            cookie="__client=browser-client",
+            captured_at=1.0,
+        )
+        with (
+            patch.object(
+                start_suno_server,
+                "capture_auth_with_browser",
+                return_value=captured,
+            ) as capture,
+            patch.object(start_suno_server, "validate_auth", return_value=True),
+            patch.object(start_suno_server, "save_auth"),
+        ):
+            auth = start_suno_server._load_or_capture_auth(
+                force_login=True,
+                timeout=30,
+                auth_source="auto",
+            )
+
+        self.assertEqual(auth, captured)
+        capture.assert_called_once_with(
+            profile_dir=start_suno_server.PROFILE_DIR,
+            timeout_sec=30,
+            wait_for_browser_close=True,
+        )
 
 if __name__ == "__main__":
     unittest.main()

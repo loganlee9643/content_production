@@ -108,6 +108,65 @@ export interface VideoTemplate {
   updated_at: string;
 }
 
+export interface ThumbnailTextLayer {
+  id: string;
+  type: "text";
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  font_family: string;
+  font_size: number;
+  color: string;
+  align: "left" | "center" | "right";
+  stroke_color: string;
+  stroke_width: number;
+  shadow: boolean;
+  background_color: string;
+  background_opacity: number;
+  padding: number;
+  rotation: number;
+  opacity: number;
+}
+
+export interface ThumbnailIconLayer {
+  id: string;
+  type: "icon";
+  icon_image: string;
+  icon: string;
+  x: number;
+  y: number;
+  size: number;
+  color: string;
+  rotation: number;
+  opacity: number;
+}
+
+export type ThumbnailLayer = ThumbnailTextLayer | ThumbnailIconLayer;
+
+export interface ThumbnailDesign {
+  width: number;
+  height: number;
+  brightness: number;
+  contrast: number;
+  saturation: number;
+  blur: number;
+  overlay_color: string;
+  overlay_opacity: number;
+  layers: ThumbnailLayer[];
+}
+
+export interface Thumbnail {
+  id: string;
+  album_id: string;
+  name: string;
+  background_asset_id: string | null;
+  design: ThumbnailDesign;
+  rendered_asset_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export class ApiError extends Error {
   status: number;
 
@@ -341,6 +400,62 @@ export const api = {
   },
   listTemplatePreviews: (albumId: string) =>
     request<Asset[]>(`/albums/${albumId}/template-previews`),
+  listThumbnailBackgrounds: (albumId: string) =>
+    request<Asset[]>(`/albums/${albumId}/thumbnail-backgrounds`),
+  generateThumbnailBackgrounds: (
+    albumId: string,
+    payload: {
+      instruction: string;
+      aspect_ratio: string;
+      candidate_count: number;
+    },
+  ) =>
+    request<{ job_id: string; status: string }>(
+      `/albums/${albumId}/thumbnail-backgrounds/generate`,
+      { method: "POST", body: json({ ...payload, track_id: null }) },
+    ),
+  uploadThumbnailBackground: async (albumId: string, file: File) => {
+    const response = await fetch(
+      `${API_BASE}/albums/${albumId}/thumbnail-backgrounds/upload?filename=${encodeURIComponent(file.name)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      },
+    );
+    if (!response.ok) throw new ApiError(response.status, await response.text());
+    return (await response.json()).data as Asset;
+  },
+  listThumbnails: (albumId: string) =>
+    request<Thumbnail[]>(`/albums/${albumId}/thumbnails`),
+  createThumbnail: (
+    albumId: string,
+    payload: {
+      name: string;
+      background_asset_id: string | null;
+      design: ThumbnailDesign;
+    },
+  ) =>
+    request<Thumbnail>(`/albums/${albumId}/thumbnails`, {
+      method: "POST",
+      body: json(payload),
+    }),
+  updateThumbnail: (
+    thumbnailId: string,
+    payload: Partial<{
+      name: string;
+      background_asset_id: string;
+      design: ThumbnailDesign;
+    }>,
+  ) =>
+    request<Thumbnail>(`/thumbnails/${thumbnailId}`, {
+      method: "PATCH",
+      body: json(payload),
+    }),
+  deleteThumbnail: (thumbnailId: string) =>
+    request<void>(`/thumbnails/${thumbnailId}`, { method: "DELETE" }),
+  renderThumbnail: (thumbnailId: string) =>
+    request<Asset>(`/thumbnails/${thumbnailId}/render`, { method: "POST" }),
   selectCover: (albumId: string, assetId: string) =>
     request<Asset>(`/albums/${albumId}/covers/${assetId}/select`, {
       method: "POST",

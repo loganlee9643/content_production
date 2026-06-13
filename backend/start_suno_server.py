@@ -124,6 +124,7 @@ def _load_or_capture_auth(
     auth = capture_auth_with_browser(
         profile_dir=PROFILE_DIR,
         timeout_sec=timeout,
+        wait_for_browser_close=force_login,
     )
     if not validate_auth(auth):
         raise SunoAuthError("Captured Suno login could not be validated.")

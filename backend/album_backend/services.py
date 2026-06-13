@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import array
 import asyncio
+import base64
 import html
 import json
 import logging
@@ -12,6 +13,8 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -42,6 +45,9 @@ SUNO_MAX_CUSTOM_PROMPT_CHARS = 5000
 logger = logging.getLogger("album_backend.services")
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
+
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 
 
 def _video_font_path(font_family: str = "malgun") -> Path | None:
@@ -407,6 +413,170 @@ def render_static_video_frame(
         destination,
         destination.stat().st_size,
     )
+    return destination
+
+
+def render_thumbnail(
+    background: Path,
+    destination: Path,
+    design: dict[str, Any],
+) -> Path:
+    if not background.is_file():
+        raise FileNotFoundError(f"Thumbnail background was not found: {background}")
+    width = max(320, min(3840, int(design.get("width", 1280) or 1280)))
+    height = max(180, min(2160, int(design.get("height", 720) or 720)))
+    with Image.open(background) as opened:
+        canvas = ImageOps.fit(
+            opened.convert("RGB"),
+            (width, height),
+            method=Image.Resampling.LANCZOS,
+        )
+    canvas = ImageEnhance.Brightness(canvas).enhance(
+        max(0, 1 + float(design.get("brightness", 0) or 0) / 100)
+    )
+    canvas = ImageEnhance.Contrast(canvas).enhance(
+        max(0, 1 + float(design.get("contrast", 0) or 0) / 100)
+    )
+    canvas = ImageEnhance.Color(canvas).enhance(
+        max(0, 1 + float(design.get("saturation", 0) or 0) / 100)
+    )
+    blur = max(0, min(30, float(design.get("blur", 0) or 0)))
+    if blur:
+        canvas = canvas.filter(ImageFilter.GaussianBlur(blur))
+    canvas = canvas.convert("RGBA")
+    overlay_opacity = max(0, min(1, float(design.get("overlay_opacity", 0) or 0)))
+    if overlay_opacity:
+        overlay_rgb = ImageColor.getrgb(str(design.get("overlay_color") or "#000000"))
+        canvas = Image.alpha_composite(
+            canvas,
+            Image.new("RGBA", canvas.size, (*overlay_rgb, round(255 * overlay_opacity))),
+        )
+
+    for layer in design.get("layers") or []:
+        layer_type = str(layer.get("type") or "")
+        opacity = max(0, min(1, float(layer.get("opacity", 1) or 0)))
+        if opacity <= 0:
+            continue
+        if layer_type == "text":
+            text = str(layer.get("text") or "")
+            if not text:
+                continue
+            font_size = max(12, min(240, int(layer.get("font_size", 72) or 72)))
+            font = _load_video_font(str(layer.get("font_family") or "malgun"), font_size)
+            layer_width = max(40, round(width * float(layer.get("width", 70) or 70) / 100))
+            padding = max(0, min(80, int(layer.get("padding", 12) or 0)))
+            stroke_width = max(0, min(20, int(layer.get("stroke_width", 3) or 0)))
+            lines = text.splitlines() or [text]
+            line_height = round(font_size * 1.2)
+            text_height = max(line_height, line_height * len(lines))
+            layer_image = Image.new(
+                "RGBA",
+                (layer_width + padding * 2, text_height + padding * 2),
+                (0, 0, 0, 0),
+            )
+            draw = ImageDraw.Draw(layer_image)
+            background_opacity = max(
+                0, min(1, float(layer.get("background_opacity", 0) or 0))
+            )
+            if background_opacity:
+                rgb = ImageColor.getrgb(str(layer.get("background_color") or "#000000"))
+                draw.rounded_rectangle(
+                    (0, 0, layer_image.width - 1, layer_image.height - 1),
+                    radius=max(4, padding),
+                    fill=(*rgb, round(255 * background_opacity)),
+                )
+            align = str(layer.get("align") or "center")
+            text_x = padding if align == "left" else (
+                layer_image.width - padding if align == "right" else layer_image.width / 2
+            )
+            anchor = "lm" if align == "left" else ("rm" if align == "right" else "mm")
+            if bool(layer.get("shadow", True)):
+                draw.multiline_text(
+                    (text_x + 4, layer_image.height / 2 + 5),
+                    text,
+                    font=font,
+                    fill=(0, 0, 0, round(180 * opacity)),
+                    anchor=anchor,
+                    align=align,
+                    spacing=round(font_size * 0.2),
+                    stroke_width=stroke_width,
+                    stroke_fill=(0, 0, 0, round(180 * opacity)),
+                )
+            color = ImageColor.getrgb(str(layer.get("color") or "#ffffff"))
+            stroke = ImageColor.getrgb(str(layer.get("stroke_color") or "#000000"))
+            draw.multiline_text(
+                (text_x, layer_image.height / 2),
+                text,
+                font=font,
+                fill=(*color, round(255 * opacity)),
+                anchor=anchor,
+                align=align,
+                spacing=round(font_size * 0.2),
+                stroke_width=stroke_width,
+                stroke_fill=(*stroke, round(255 * opacity)),
+            )
+        elif layer_type == "icon":
+            size = max(16, min(500, int(layer.get("size", 96) or 96)))
+            icon_name = str(layer.get("icon_image") or "")
+            icon_path = resolve_video_icon(icon_name) if icon_name else None
+            if icon_path:
+                source = icon_path
+                temporary_svg = None
+                if icon_path.suffix.lower() == ".svg":
+                    temporary_svg = destination.parent / f".{db.new_id()}-icon.png"
+                    source = rasterize_svg_icon(icon_path, temporary_svg, size)
+                try:
+                    with Image.open(source) as opened:
+                        layer_image = ImageOps.contain(
+                            opened.convert("RGBA"),
+                            (size, size),
+                            method=Image.Resampling.LANCZOS,
+                        )
+                finally:
+                    if temporary_svg:
+                        temporary_svg.unlink(missing_ok=True)
+                if opacity < 1:
+                    alpha = layer_image.getchannel("A").point(
+                        lambda value: round(value * opacity)
+                    )
+                    layer_image.putalpha(alpha)
+            else:
+                icon = str(layer.get("icon") or "")
+                if not icon:
+                    continue
+                font = _load_video_font("malgun", size)
+                layer_image = Image.new("RGBA", (size * 2, size * 2), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(layer_image)
+                color = ImageColor.getrgb(str(layer.get("color") or "#ffffff"))
+                draw.text(
+                    (layer_image.width / 2, layer_image.height / 2),
+                    icon,
+                    font=font,
+                    fill=(*color, round(255 * opacity)),
+                    anchor="mm",
+                )
+        else:
+            continue
+
+        rotation = float(layer.get("rotation", 0) or 0)
+        if rotation:
+            layer_image = layer_image.rotate(
+                -rotation,
+                expand=True,
+                resample=Image.Resampling.BICUBIC,
+            )
+        center_x = width * float(layer.get("x", 50) or 50) / 100
+        center_y = height * float(layer.get("y", 50) or 50) / 100
+        canvas.alpha_composite(
+            layer_image,
+            (
+                round(center_x - layer_image.width / 2),
+                round(center_y - layer_image.height / 2),
+            ),
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    canvas.convert("RGB").save(destination, "PNG")
     return destination
 
 
@@ -850,16 +1020,121 @@ def _extract_json(text: str) -> dict[str, Any]:
     return parsed
 
 
-def _gemini_text(system_instruction: str, user_text: str) -> str:
-    from app.services.gemini_client import gemini_generate_content
-    from app.services.gemini_model_catalog import DEFAULT_GEMINI_MODEL
+def _gemini_generate_content(
+    model: str,
+    payload: dict[str, Any],
+    timeout: float = 300,
+) -> dict[str, Any]:
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY is not configured. Add it to the project .env file "
+            "and restart the backend."
+        )
+    model = model.strip()
+    if not model:
+        raise ValueError("A Gemini model name is required.")
 
-    return gemini_generate_content(
-        os.getenv("GEMINI_API_KEY", ""),
-        os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
-        system_instruction=system_instruction,
-        user_text=user_text,
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{urllib.parse.quote(model, safe='')}:generateContent"
     )
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            detail = json.loads(body).get("error", {}).get("message", body)
+        except json.JSONDecodeError:
+            detail = body
+        raise RuntimeError(f"Gemini API request failed ({exc.code}): {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not connect to the Gemini API: {exc.reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Gemini API returned invalid JSON.") from exc
+
+    if not isinstance(result, dict):
+        raise RuntimeError("Gemini API returned an invalid response.")
+    return result
+
+
+def _gemini_response_parts(result: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = result.get("candidates") or []
+    if not candidates:
+        block_reason = (result.get("promptFeedback") or {}).get("blockReason")
+        suffix = f": {block_reason}" if block_reason else ""
+        raise RuntimeError(f"Gemini API returned no candidates{suffix}.")
+    parts = ((candidates[0].get("content") or {}).get("parts") or [])
+    if not parts:
+        raise RuntimeError("Gemini API returned an empty response.")
+    return parts
+
+
+def _gemini_text(system_instruction: str, user_text: str) -> str:
+    result = _gemini_generate_content(
+        os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
+        {
+            "systemInstruction": {
+                "parts": [{"text": system_instruction}],
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": user_text}],
+                }
+            ],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "temperature": 0.8,
+            },
+        },
+    )
+    text = "".join(
+        str(part.get("text", ""))
+        for part in _gemini_response_parts(result)
+        if "text" in part
+    ).strip()
+    if not text:
+        raise RuntimeError("Gemini API response did not contain text.")
+    return text
+
+
+def _gemini_image(prompt: str, aspect_ratio: str) -> tuple[bytes, str]:
+    result = _gemini_generate_content(
+        os.getenv("GEMINI_IMAGE_MODEL", DEFAULT_GEMINI_IMAGE_MODEL),
+        {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": prompt}],
+                }
+            ],
+            "generationConfig": {
+                "responseModalities": ["TEXT", "IMAGE"],
+                "imageConfig": {"aspectRatio": aspect_ratio},
+            },
+        },
+    )
+    for part in _gemini_response_parts(result):
+        inline_data = part.get("inlineData") or part.get("inline_data")
+        if not inline_data or not inline_data.get("data"):
+            continue
+        try:
+            raw = base64.b64decode(inline_data["data"], validate=True)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("Gemini API returned invalid image data.") from exc
+        return raw, inline_data.get("mimeType") or inline_data.get("mime_type") or "image/png"
+    raise RuntimeError("Gemini API response did not contain an image.")
 
 
 SUNO_ALBUM_PLAN_SYSTEM = """
@@ -1490,30 +1765,28 @@ def run_image_generation(
         track = db.get_one("tracks", track_id) if track_id else None
         if not album:
             raise ValueError("Album not found")
-        prompt = (
-            f"16:9 visual design reference image for a music video template, "
-            f"{album['style_prompt'] or album['genre']}"
-            if asset_type == "template_preview"
-            else (
+        if asset_type == "template_preview":
+            prompt = (
+                "16:9 visual design reference image for a music video template, "
+                f"{album['style_prompt'] or album['genre']}"
+            )
+        elif asset_type == "thumbnail_background":
+            prompt = (
+                "16:9 cinematic YouTube music playlist thumbnail background, "
+                "strong focal composition with clear negative space for headline text, "
+                "no words, no letters, no logos, "
+                f"{album['style_prompt'] or album['genre']}"
+            )
+        else:
+            prompt = (
                 (track or {}).get("image_prompt")
                 or f"Cinematic album artwork for {album['title']}, {album['style_prompt']}"
             )
-        )
         if instruction:
             prompt = f"{prompt}\nAdditional direction: {instruction}"
-        from app.services.gemini_image_client import gemini_generate_image
-        from app.services.gemini_image_model_catalog import (
-            DEFAULT_GEMINI_IMAGE_MODEL,
-        )
-
         assets = []
         for index in range(candidate_count):
-            raw, mime = gemini_generate_image(
-                os.getenv("GEMINI_API_KEY", ""),
-                os.getenv("GEMINI_IMAGE_MODEL", DEFAULT_GEMINI_IMAGE_MODEL),
-                prompt=prompt,
-                aspect_ratio=aspect_ratio,
-            )
+            raw, mime = _gemini_image(prompt, aspect_ratio)
             extension = ".png" if "png" in mime else ".jpg"
             relative = (
                 Path("albums")
@@ -1550,7 +1823,10 @@ def save_uploaded_asset(
     asset_type: str = "cover",
 ) -> dict[str, Any]:
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename) or "upload.bin"
-    folder = "template-previews" if asset_type == "template_preview" else "uploads"
+    folder = {
+        "template_preview": "template-previews",
+        "thumbnail_background": "thumbnail-backgrounds",
+    }.get(asset_type, "uploads")
     relative = Path("albums") / album_id / folder / f"{db.new_id()}-{safe_name}"
     destination = db.STORAGE_DIR / relative
     destination.parent.mkdir(parents=True, exist_ok=True)
