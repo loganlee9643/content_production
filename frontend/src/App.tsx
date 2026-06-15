@@ -3766,11 +3766,33 @@ function AlbumVideoPage() {
   const job = useJob(jobId);
   const trackOrder = new Map((tracks.data || []).map((track) => [track.id, track.sequence]));
   const trackById = new Map((tracks.data || []).map((track) => [track.id, track]));
+  const selectedGenerations = (tracks.data || []).flatMap((track) =>
+    (track.selected_generations || []).map((generation, generationIndex) => ({
+      generation,
+      track,
+      generationIndex,
+    })),
+  );
+  const selectedGenerationById = new Map(
+    selectedGenerations.map((item) => [item.generation.id, item]),
+  );
   const trackVideos = (album.data?.assets || [])
-    .filter((asset) => asset.type === "video" && asset.track_id)
+    .filter((asset) =>
+      asset.type === "video"
+      && asset.track_id
+      && asset.generation_id
+      && selectedGenerationById.has(asset.generation_id),
+    )
     .sort((left, right) => right.created_at.localeCompare(left.created_at))
-    .filter((asset, index, all) => all.findIndex((item) => item.track_id === asset.track_id) === index)
-    .sort((left, right) => (trackOrder.get(left.track_id || "") || 0) - (trackOrder.get(right.track_id || "") || 0));
+    .filter((asset, index, all) => all.findIndex((item) => item.generation_id === asset.generation_id) === index)
+    .sort((left, right) => {
+      const leftSelection = selectedGenerationById.get(left.generation_id || "");
+      const rightSelection = selectedGenerationById.get(right.generation_id || "");
+      const trackDifference = (trackOrder.get(left.track_id || "") || 0)
+        - (trackOrder.get(right.track_id || "") || 0);
+      return trackDifference
+        || (leftSelection?.generationIndex || 0) - (rightSelection?.generationIndex || 0);
+    });
   const videoById = new Map(trackVideos.map((video) => [video.id, video]));
   const displayedVideos = [
     ...orderedAssetIds.map((id) => videoById.get(id)).filter((video): video is Asset => Boolean(video)),
@@ -3858,12 +3880,16 @@ function AlbumVideoPage() {
                 const selectedIndex = orderedAssetIds.indexOf(video.id);
                 const selected = selectedIndex >= 0;
                 const track = trackById.get(video.track_id || "");
+                const generation = selectedGenerationById.get(video.generation_id || "")?.generation;
                 return (
                   <article key={video.id} className={selected ? "selected" : ""}>
                     <label>
                       <input type="checkbox" checked={selected} onChange={() => toggle(video.id)} />
                       <span className="track-number">{track?.sequence || "-"}</span>
-                      <span><strong>{track?.title || video.original_name}</strong><small>{selected ? `${selectedIndex + 1}번째 재생` : "제외됨"}</small></span>
+                      <span>
+                        <strong>{generation?.title || track?.title || video.original_name}</strong>
+                        <small>{track?.title && generation?.title !== track.title ? `${track.title} · ` : ""}{selected ? `${selectedIndex + 1}번째 재생` : "제외됨"}</small>
+                      </span>
                     </label>
                     <div className="order-buttons">
                       <button type="button" aria-label="위로 이동" disabled={!selected || selectedIndex === 0} onClick={() => move(selectedIndex, -1)}><ChevronUp size={17} /></button>
