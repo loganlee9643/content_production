@@ -62,6 +62,10 @@ class TrackUpdate(BaseModel):
     model: str | None = None
 
 
+class GenerationUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+
+
 class LyricsUpdate(BaseModel):
     lyrics: str
 
@@ -198,6 +202,7 @@ class ThumbnailCopyGenerateRequest(BaseModel):
 class VideoRenderRequest(BaseModel):
     mode: Literal["static_loop", "animated_image", "album_mix"] = "static_loop"
     track_id: str
+    generation_id: str | None = None
     image_asset_id: str
     resolution: str = "1920x1080"
     show_title: bool = True
@@ -244,7 +249,8 @@ class TrackVideoTemplateUpdate(BaseModel):
 
 
 class BatchVideoRenderRequest(BaseModel):
-    track_ids: list[str] = Field(min_length=1)
+    track_ids: list[str] = Field(default_factory=list)
+    generation_ids: list[str] = Field(default_factory=list)
     template_id: str | None = None
     edit_mode: Literal[
         "saved_then_template",

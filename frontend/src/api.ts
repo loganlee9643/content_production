@@ -40,6 +40,7 @@ export interface Track {
   status: string;
   selected_generation_id: string | null;
   generations?: Generation[];
+  selected_generations?: Generation[];
 }
 
 export interface Generation {
@@ -268,6 +269,11 @@ export const api = {
       `/tracks/${trackId}/generations/${generationId}/select`,
       { method: "POST" },
     ),
+  updateGeneration: (generationId: string, title: string) =>
+    request<Generation>(`/generations/${generationId}`, {
+      method: "PATCH",
+      body: json({ title }),
+    }),
   getJob: (id: string) => request<Job>(`/jobs/${id}`),
   sunoStatus: () => request<SunoStatus>("/system/suno-status"),
   listVideoIcons: () => request<VideoIcon[]>("/system/video-icons"),
@@ -317,7 +323,8 @@ export const api = {
   renderVideosBatch: (
     albumId: string,
     payload: {
-      track_ids: string[];
+      track_ids?: string[];
+      generation_ids?: string[];
       template_id?: string | null;
       edit_mode?: "saved_then_template" | "template_only" | "saved_only";
       missing_edit_action?: "template" | "exclude";

@@ -230,14 +230,15 @@ class AlbumBackendTest(unittest.TestCase):
             )
 
     def test_video_template_create_assign_and_list(self) -> None:
-        album = self.create_album()
+        template_album = self.create_album()
         preview = services.save_uploaded_asset(
-            album["id"],
+            template_album["id"],
             b"preview",
             "template-preview.png",
             "image/png",
             "template_preview",
         )
+        album = self.create_album()
         track = asyncio.run(
             router.create_track(
                 album["id"],
@@ -246,7 +247,7 @@ class AlbumBackendTest(unittest.TestCase):
         )["data"]
         template = asyncio.run(
             router.create_video_template(
-                album["id"],
+                template_album["id"],
                 schemas.VideoTemplateCreate(
                     name="기본 템플릿",
                     compose=schemas.ImageComposeRequest(
@@ -274,9 +275,9 @@ class AlbumBackendTest(unittest.TestCase):
             router.list_video_template_assignments(album["id"])
         )["data"]
         template_previews = asyncio.run(
-            router.list_template_previews(album["id"])
+            router.list_template_previews(template_album["id"])
         )["data"]
-        covers = asyncio.run(router.list_images(album["id"]))["data"]
+        covers = asyncio.run(router.list_images(template_album["id"]))["data"]
 
         self.assertEqual(templates[0]["name"], "기본 템플릿")
         self.assertEqual(templates[0]["compose"]["visualizer_style"], "bars")
@@ -286,9 +287,75 @@ class AlbumBackendTest(unittest.TestCase):
         self.assertEqual(template_previews[0]["id"], preview["id"])
         self.assertNotIn(preview["id"], {asset["id"] for asset in covers})
         self.assertEqual(assignments[track["id"]], template["id"])
+        self.assertNotEqual(template["album_id"], album["id"])
+
+    def test_generations_support_multiple_selection_and_title_update(self) -> None:
+        album = self.create_album()
+        track = asyncio.run(
+            router.create_track(
+                album["id"],
+                schemas.TrackCreate(sequence=1, title="복수 선택 트랙"),
+            )
+        )["data"]
+        generations = [
+            db.insert(
+                "generations",
+                {
+                    "id": db.new_id(),
+                    "track_id": track["id"],
+                    "job_id": services.create_job(
+                        "track_generate", "track", track["id"]
+                    )["id"],
+                    "request_id": None,
+                    "clip_id": f"clip-{index}",
+                    "status": "complete",
+                    "title": f"후보 {index}",
+                    "audio_url": None,
+                    "image_url": None,
+                    "local_audio_path": None,
+                    "generated_lyrics": None,
+                    "tags": None,
+                    "raw_response_json": "{}",
+                    "is_selected": 0,
+                    "created_at": db.now_iso(),
+                    "completed_at": db.now_iso(),
+                },
+            )
+            for index in range(1, 3)
+        ]
+
+        for generation in generations:
+            asyncio.run(router.select_generation(track["id"], generation["id"]))
+
+        selected = asyncio.run(router.list_generations(track["id"]))["data"]
+        self.assertEqual(sum(item["is_selected"] for item in selected), 2)
+        listed_track = asyncio.run(router.list_tracks(album["id"]))["data"][0]
+        self.assertEqual(
+            [item["id"] for item in listed_track["selected_generations"]],
+            [item["id"] for item in generations],
+        )
+        self.assertEqual(
+            db.get_one("tracks", track["id"])["selected_generation_id"],
+            generations[-1]["id"],
+        )
+
+        asyncio.run(router.select_generation(track["id"], generations[-1]["id"]))
+        self.assertEqual(
+            db.get_one("tracks", track["id"])["selected_generation_id"],
+            generations[0]["id"],
+        )
+
+        updated = asyncio.run(
+            router.update_generation(
+                generations[0]["id"],
+                schemas.GenerationUpdate(title="변경된 후보 제목"),
+            )
+        )["data"]
+        self.assertEqual(updated["title"], "변경된 후보 제목")
 
     def test_batch_video_render_applies_template_to_generated_image(self) -> None:
         album = self.create_album()
+        template_album = self.create_album()
         track = asyncio.run(
             router.create_track(
                 album["id"],
@@ -325,7 +392,7 @@ class AlbumBackendTest(unittest.TestCase):
         )
         template = asyncio.run(
             router.create_video_template(
-                album["id"],
+                template_album["id"],
                 schemas.VideoTemplateCreate(
                     name="자동 템플릿",
                     compose=schemas.ImageComposeRequest(
@@ -373,6 +440,7 @@ class AlbumBackendTest(unittest.TestCase):
         def fake_video_render(child_job_id, target_album_id, render_request):
             image_asset = db.get_one("assets", render_request.image_asset_id)
             self.assertTrue(image_asset["metadata"]["render_frame"])
+            self.assertEqual(render_request.generation_id, generation["id"])
             compose = captured_compose
             self.assertEqual(compose["title"], track["title"])
             self.assertEqual(compose["artist_name"], "Template Artist")
@@ -390,7 +458,7 @@ class AlbumBackendTest(unittest.TestCase):
                 batch_job["id"],
                 album["id"],
                 schemas.BatchVideoRenderRequest(
-                    track_ids=[track["id"]],
+                    generation_ids=[generation["id"]],
                     template_id=template["id"],
                 ),
             )

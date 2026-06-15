@@ -2095,7 +2095,9 @@ def run_video_render(job_id: str, album_id: str, request: Any) -> None:
         if not image_asset or image_asset["album_id"] != album_id:
             raise ValueError("Image asset not found in album")
         generation = (
-            db.get_one("generations", track["selected_generation_id"])
+            db.get_one("generations", request.generation_id)
+            if request.generation_id
+            else db.get_one("generations", track["selected_generation_id"])
             if track.get("selected_generation_id")
             else db.fetch_one(
                 """
@@ -2106,6 +2108,8 @@ def run_video_render(job_id: str, album_id: str, request: Any) -> None:
                 (track["id"],),
             )
         )
+        if generation and generation["track_id"] != track["id"]:
+            raise ValueError("Generation not found in track")
         if not generation or not generation.get("local_audio_path"):
             raise ValueError("Select or download a generated audio candidate first")
         ffmpeg = shutil.which("ffmpeg")
@@ -2447,7 +2451,7 @@ def run_video_render(job_id: str, album_id: str, request: Any) -> None:
             generation_id=generation["id"],
             asset_type="video",
             path=output_path,
-            original_name=f"{track['title']}.mp4",
+            original_name=f"{generation.get('title') or track['title']}.mp4",
             content_type="video/mp4",
             metadata=_model_dump(request),
         )
@@ -2483,14 +2487,21 @@ def run_batch_video_render(
         album = db.get_one("albums", album_id)
         if not album:
             raise ValueError("Album not found")
-        track_ids = list(dict.fromkeys(request.track_ids))
+        work_items: list[tuple[str, str | None]] = []
+        for generation_id in dict.fromkeys(request.generation_ids):
+            generation = db.get_one("generations", generation_id)
+            if generation:
+                work_items.append((generation["track_id"], generation_id))
+        if not work_items:
+            work_items = [
+                (track_id, None)
+                for track_id in dict.fromkeys(request.track_ids)
+            ]
         template = (
             db.get_one("video_templates", request.template_id)
             if request.template_id
             else None
         )
-        if template and template["album_id"] != album_id:
-            raise ValueError("Video template not found in album")
         shared_existing = (
             db.get_one("assets", request.shared_image_asset_id)
             if request.shared_image_asset_id
@@ -2508,13 +2519,15 @@ def run_batch_video_render(
         activity_tracks = [
             {
                 "track_id": track_id,
+                "generation_id": generation_id,
                 "title": (
-                    db.get_one("tracks", track_id) or {}
-                ).get("title", track_id),
+                    db.get_one("generations", generation_id) or {}
+                ).get("title")
+                or (db.get_one("tracks", track_id) or {}).get("title", track_id),
                 "status": "waiting",
                 "message": "대기 중",
             }
-            for track_id in track_ids
+            for track_id, generation_id in work_items
         ]
         shared_generated: dict[str, Any] | None = None
 
@@ -2525,7 +2538,7 @@ def run_batch_video_render(
                 job_id,
                 {
                     "current_index": index,
-                    "total": len(track_ids),
+                    "total": len(work_items),
                     "tracks": activity_tracks,
                 },
             )
@@ -2614,7 +2627,10 @@ def run_batch_video_render(
                 )
             raise RuntimeError(last_error)
 
-        def template_compose(track: dict[str, Any]) -> dict[str, Any]:
+        def template_compose(
+            track: dict[str, Any],
+            generation: dict[str, Any] | None,
+        ) -> dict[str, Any]:
             if not template:
                 raise ValueError("공통 템플릿이 선택되지 않았습니다.")
             compose = {
@@ -2623,7 +2639,7 @@ def run_batch_video_render(
             }
             if (template.get("title_source") or "track") == "track":
                 compose["title_anchor_text"] = str(compose.get("title") or "")
-                compose["title"] = track["title"]
+                compose["title"] = (generation or {}).get("title") or track["title"]
             elif template.get("title_source") == "hidden":
                 compose["title"] = ""
             if (template.get("artist_source") or "album") == "album":
@@ -2632,25 +2648,35 @@ def run_batch_video_render(
                 compose["artist_name"] = ""
             return compose
 
-        for index, track_id in enumerate(track_ids):
+        for index, (track_id, generation_id) in enumerate(work_items):
             track = db.get_one("tracks", track_id)
+            generation = (
+                db.get_one("generations", generation_id)
+                if generation_id
+                else None
+            )
             try:
                 if not track or track["album_id"] != album_id:
                     raise ValueError("Track not found in album")
+                if generation and generation["track_id"] != track_id:
+                    raise ValueError("Generation not found in track")
+                target_generation_id = generation_id or track.get("selected_generation_id")
+                target_title = (generation or {}).get("title") or track["title"]
                 existing_video = db.fetch_one(
                     """
                     SELECT * FROM assets
                      WHERE album_id = ? AND track_id = ? AND type = 'video'
+                       AND generation_id IS ?
                      ORDER BY created_at DESC LIMIT 1
                     """,
-                    (album_id, track_id),
+                    (album_id, track_id, target_generation_id),
                 )
                 if existing_video and not request.overwrite_existing:
                     publish(index, "skipped", "이미 완성된 영상이 있어 건너뛰었어요")
                     skipped.append(
                         {
                             "track_id": track_id,
-                            "title": track["title"],
+                            "title": target_title,
                             "reason": "video already exists",
                         }
                     )
@@ -2658,7 +2684,7 @@ def run_batch_video_render(
 
                 saved_asset = saved_edit_image(track_id)
                 if request.edit_mode == "template_only":
-                    compose = template_compose(track)
+                    compose = template_compose(track, generation)
                     edit_source = "template"
                 elif saved_asset:
                     compose = {
@@ -2677,7 +2703,7 @@ def run_batch_video_render(
                     )
                     continue
                 else:
-                    compose = template_compose(track)
+                    compose = template_compose(track, generation)
                     edit_source = "template"
 
                 instructions = "\n".join(
@@ -2727,7 +2753,7 @@ def run_batch_video_render(
                     Path("albums")
                     / album_id
                     / "video-frames"
-                    / f"{job_id}-{track_id}.png"
+                    / f"{job_id}-{target_generation_id or track_id}.png"
                 )
                 frame_path = db.STORAGE_DIR / frame_relative
                 logger.info(
@@ -2757,7 +2783,7 @@ def run_batch_video_render(
                 frame_asset = create_asset(
                     album_id=album_id,
                     track_id=track_id,
-                    generation_id=track.get("selected_generation_id"),
+                    generation_id=target_generation_id,
                     asset_type="composed_image",
                     path=frame_path,
                     original_name=f"loop-render-frame-{track_id}.png",
@@ -2770,6 +2796,7 @@ def run_batch_video_render(
                 )
                 render_request = schemas.VideoRenderRequest(
                     track_id=track_id,
+                    generation_id=target_generation_id,
                     image_asset_id=frame_asset["id"],
                     show_title=False,
                     show_visualizer=bool(compose.get("show_visualizer", True)),
@@ -2803,6 +2830,7 @@ def run_batch_video_render(
                     track_id,
                     {
                         "batch_job_id": job_id,
+                        "generation_id": target_generation_id,
                         "template_id": (template or {}).get("id"),
                         "image_asset_id": frame_asset["id"],
                         "source_image_asset_id": image_asset["id"],
@@ -2843,7 +2871,8 @@ def run_batch_video_render(
                 completed.append(
                     {
                         "track_id": track_id,
-                        "title": track["title"],
+                        "generation_id": target_generation_id or "",
+                        "title": target_title,
                         "edit_source": edit_source,
                         "image_source": image_source,
                         "image_asset_id": image_asset["id"],
@@ -2871,7 +2900,7 @@ def run_batch_video_render(
             finally:
                 set_job_progress(
                     job_id,
-                    int(100 * (index + 1) / max(1, len(track_ids))),
+                    int(100 * (index + 1) / max(1, len(work_items))),
                 )
 
         set_job_succeeded(

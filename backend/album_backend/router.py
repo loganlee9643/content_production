@@ -157,11 +157,19 @@ async def plan_album(album_id: str, background_tasks: BackgroundTasks):
 @router.get("/albums/{album_id}/tracks")
 async def list_tracks(album_id: str):
     require("albums", album_id, "Album")
-    return data(
-        db.fetch_all(
-            "SELECT * FROM tracks WHERE album_id = ? ORDER BY sequence", (album_id,)
-        )
+    tracks = db.fetch_all(
+        "SELECT * FROM tracks WHERE album_id = ? ORDER BY sequence", (album_id,)
     )
+    for track in tracks:
+        track["selected_generations"] = db.fetch_all(
+            """
+            SELECT * FROM generations
+             WHERE track_id = ? AND is_selected = 1
+             ORDER BY created_at
+            """,
+            (track["id"],),
+        )
+    return data(tracks)
 
 
 @router.post(
@@ -400,18 +408,51 @@ async def list_generations(track_id: str):
     "/tracks/{track_id}/generations/{generation_id}/select"
 )
 async def select_generation(track_id: str, generation_id: str):
-    track = require("tracks", track_id, "Track")
+    require("tracks", track_id, "Track")
     generation = require("generations", generation_id, "Generation")
     if generation["track_id"] != track_id:
         raise HTTPException(status_code=409, detail="Generation belongs to another track")
-    db.execute("UPDATE generations SET is_selected = 0 WHERE track_id = ?", (track_id,))
-    db.update("generations", generation_id, {"is_selected": 1})
+    is_selected = not generation["is_selected"]
+    db.update("generations", generation_id, {"is_selected": int(is_selected)})
+    selected_generation_id = generation_id if is_selected else None
+    if not is_selected:
+        remaining = db.fetch_one(
+            """
+            SELECT * FROM generations
+             WHERE track_id = ? AND is_selected = 1
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            (track_id,),
+        )
+        selected_generation_id = remaining["id"] if remaining else None
     db.update(
         "tracks",
         track_id,
-        {"selected_generation_id": generation_id, "updated_at": db.now_iso()},
+        {
+            "selected_generation_id": selected_generation_id,
+            "updated_at": db.now_iso(),
+        },
     )
     return data(db.get_one("generations", generation_id))
+
+
+@router.patch("/generations/{generation_id}")
+async def update_generation(
+    generation_id: str,
+    payload: schemas.GenerationUpdate,
+):
+    require("generations", generation_id, "Generation")
+    title = payload.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Generation title is required")
+    return data(
+        db.update(
+            "generations",
+            generation_id,
+            {"title": title},
+        )
+    )
 
 
 @router.get("/jobs/{job_id}")
@@ -451,10 +492,8 @@ async def list_video_templates(album_id: str):
         db.fetch_all(
             """
             SELECT * FROM video_templates
-             WHERE album_id = ?
              ORDER BY created_at DESC
-            """,
-            (album_id,),
+            """
         )
     )
 
@@ -500,10 +539,7 @@ async def update_video_template(
     values = dump(payload, exclude_none=True)
     if "preview_asset_id" in values:
         preview = require("assets", values["preview_asset_id"], "Preview asset")
-        if (
-            preview["album_id"] != template["album_id"]
-            or preview["type"] != "template_preview"
-        ):
+        if preview["type"] != "template_preview":
             raise HTTPException(status_code=409, detail="Invalid template preview asset")
     if "compose" in values:
         values["compose_json"] = db.encode_json(values.pop("compose"))
@@ -609,13 +645,8 @@ async def set_track_video_template(
     track_id: str,
     payload: schemas.TrackVideoTemplateUpdate,
 ):
-    track = require("tracks", track_id, "Track")
-    template = require("video_templates", payload.template_id, "Video template")
-    if template["album_id"] != track["album_id"]:
-        raise HTTPException(
-            status_code=409,
-            detail="Video template belongs to another album",
-        )
+    require("tracks", track_id, "Track")
+    require("video_templates", payload.template_id, "Video template")
     existing = db.fetch_one(
         "SELECT * FROM track_video_templates WHERE track_id = ?",
         (track_id,),
@@ -939,6 +970,13 @@ async def render_video(
     background_tasks: BackgroundTasks,
 ):
     require("albums", album_id, "Album")
+    if payload.generation_id:
+        generation = require("generations", payload.generation_id, "Generation")
+        if generation["track_id"] != payload.track_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Generation belongs to another track",
+            )
     job = services.create_job("video_render", "album", album_id, dump(payload))
     background_tasks.add_task(
         services.run_video_render, job["id"], album_id, payload
@@ -966,6 +1004,17 @@ async def render_videos_batch(
     invalid = [track_id for track_id in payload.track_ids if track_id not in album_track_ids]
     if invalid:
         raise HTTPException(status_code=409, detail="Some tracks belong to another album")
+    generations = [
+        require("generations", generation_id, "Generation")
+        for generation_id in payload.generation_ids
+    ]
+    if any(generation["track_id"] not in album_track_ids for generation in generations):
+        raise HTTPException(
+            status_code=409,
+            detail="Some generations belong to another album",
+        )
+    if not payload.track_ids and not payload.generation_ids:
+        raise HTTPException(status_code=422, detail="Select at least one audio candidate")
     job = services.create_job(
         "video_render_batch",
         "album",

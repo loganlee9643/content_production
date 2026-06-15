@@ -37,6 +37,7 @@ import {
   MoreHorizontal,
   Music2,
   Pause,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -929,6 +930,8 @@ function GenerationPanel({
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(track.sequence === 1);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [editingTitleId, setEditingTitleId] = useState<string | null>(null);
+  const [titleDrafts, setTitleDrafts] = useState<Record<string, string>>({});
   const generations = useQuery({ queryKey: qk.generations(track.id), queryFn: () => api.listGenerations(track.id), enabled: open });
   const generate = useMutation({
     mutationFn: () => api.generateTrack(track.id),
@@ -939,6 +942,15 @@ function GenerationPanel({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: qk.generations(track.id) });
       queryClient.invalidateQueries({ queryKey: qk.tracks(track.album_id) });
+    },
+  });
+  const updateTitle = useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) => api.updateGeneration(id, title),
+    onSuccess: (updated) => {
+      setTitleDrafts((current) => ({ ...current, [updated.id]: updated.title }));
+      setEditingTitleId(null);
+      queryClient.invalidateQueries({ queryKey: qk.generations(track.id) });
+      queryClient.invalidateQueries({ queryKey: qk.album(track.album_id) });
     },
   });
   const job = useJob(jobId);
@@ -964,7 +976,7 @@ function GenerationPanel({
       {open && (
         <div className="generation-body">
           <JobPanel job={job.data} />
-          <ErrorNotice error={generate.error || generations.error || choose.error} />
+          <ErrorNotice error={generate.error || generations.error || choose.error || updateTitle.error} />
           <div className="input-summary">
             <button className={detailTab === "lyrics" ? "active" : ""} onClick={() => onOpenDetail("lyrics")}><FileText size={16} /> 가사 {track.lyrics.length.toLocaleString()}자</button>
             <button className={detailTab === "style" ? "active" : ""} onClick={() => onOpenDetail("style")}><Sparkles size={16} /> 스타일 {track.style_prompt.length.toLocaleString()}자</button>
@@ -977,6 +989,8 @@ function GenerationPanel({
                 {generations.data.map((candidate) => {
                   const local = audioAsset(candidate);
                   const source = local ? assetUrl(local.id) : candidate.audio_url || "";
+                  const titleDraft = titleDrafts[candidate.id] ?? candidate.title;
+                  const titleChanged = titleDraft.trim() !== candidate.title;
                   return (
                     <div className={`candidate-card ${candidate.is_selected ? "selected" : ""}`} key={candidate.id}>
                       <div className="candidate-cover">
@@ -986,14 +1000,66 @@ function GenerationPanel({
                             <img className="candidate-cover-image" src={candidate.image_url} alt={`${candidate.title || track.title} 커버`} />
                           </>
                         ) : <Disc3 size={42} />}
-                        {candidate.is_selected && <span className="selected-stamp"><CircleCheck size={15} /> 최종 선택</span>}
+                        {candidate.is_selected && <span className="selected-stamp"><CircleCheck size={15} /> 선택됨</span>}
                       </div>
-                      <h4>{candidate.title || `Candidate ${candidate.clip_id.slice(0, 5)}`}</h4>
+                      {editingTitleId === candidate.id ? (
+                        <div className="candidate-title-editor">
+                          <input
+                            value={titleDraft}
+                            aria-label="후보 제목"
+                            autoFocus
+                            onChange={(event) => setTitleDrafts((current) => ({
+                              ...current,
+                              [candidate.id]: event.target.value,
+                            }))}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" && titleDraft.trim() && titleChanged) {
+                                updateTitle.mutate({ id: candidate.id, title: titleDraft.trim() });
+                              }
+                              if (event.key === "Escape") setEditingTitleId(null);
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label="제목 저장"
+                            disabled={!titleDraft.trim() || !titleChanged || updateTitle.isPending}
+                            onClick={() => updateTitle.mutate({ id: candidate.id, title: titleDraft.trim() })}
+                          >
+                            <Save size={15} />
+                          </button>
+                          <button type="button" className="icon-button" aria-label="제목 편집 취소" onClick={() => setEditingTitleId(null)}>
+                            <X size={15} />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="candidate-title">
+                          <h4>{candidate.title || `Candidate ${candidate.clip_id.slice(0, 5)}`}</h4>
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label="제목 편집"
+                            onClick={() => {
+                              setTitleDrafts((current) => ({ ...current, [candidate.id]: candidate.title }));
+                              setEditingTitleId(candidate.id);
+                            }}
+                          >
+                            <Pencil size={14} />
+                          </button>
+                        </div>
+                      )}
                       <p>{candidate.tags || track.style_prompt}</p>
                       {source ? <audio controls preload="none" src={source} /> : <span className="audio-wait">오디오 준비 중</span>}
                       <div className="candidate-actions">
                         {source && <a href={source} download className="button ghost"><Download size={16} /> MP3</a>}
-                        <Button variant={candidate.is_selected ? "secondary" : "primary"} disabled={candidate.is_selected} onClick={() => choose.mutate(candidate.id)}>{candidate.is_selected ? "선택됨" : "최종 선택"}</Button>
+                        <Button
+                          variant={candidate.is_selected ? "secondary" : "primary"}
+                          loading={choose.isPending && choose.variables === candidate.id}
+                          disabled={choose.isPending && choose.variables !== candidate.id}
+                          onClick={() => choose.mutate(candidate.id)}
+                        >
+                          {candidate.is_selected ? "선택 해제" : "선택"}
+                        </Button>
                       </div>
                     </div>
                   );
@@ -1203,6 +1269,7 @@ type BatchEditMode = "saved_then_template" | "template_only" | "saved_only";
 type BatchImageMode = "generate_per_track" | "generate_shared" | "selected_then_generate_per_track" | "shared_existing";
 type BatchActivityTrack = {
   track_id: string;
+  generation_id?: string;
   title: string;
   status: string;
   message: string;
@@ -1544,10 +1611,18 @@ function VideoCreationPage() {
     queryFn: api.listVideoIcons,
   });
   const videoTemplates = useQuery({
-    queryKey: ["albums", albumId, "video-templates"],
+    queryKey: ["video-templates"],
     queryFn: () => api.listVideoTemplates(albumId),
   });
-  const eligible = (tracks.data || []).filter((track) => track.selected_generation_id);
+  const eligible = (tracks.data || []).flatMap((track) =>
+    (track.selected_generations || []).map((generation) => ({
+      ...track,
+      id: generation.id,
+      source_track_id: track.id,
+      generation_id: generation.id,
+      title: generation.title || track.title,
+    })),
+  );
   const [trackId, setTrackId] = useState("");
   const [coverId, setCoverId] = useState("");
   const [instruction, setInstruction] = useState("");
@@ -1597,7 +1672,7 @@ function VideoCreationPage() {
   const videos = assets.filter((asset) => asset.type === "video");
   const editableCovers = (covers.data || []).filter((cover) => !isRenderFrameAsset(cover));
   const previewImages = templatePreviews.data || [];
-  const videoForTrack = (id: string) => videos.find((asset) => asset.track_id === id);
+  const videoForTrack = (id: string) => videos.find((asset) => asset.generation_id === id);
   const completedCount = eligible.filter((track) => videoForTrack(track.id)).length;
   const selectedTrack = eligible.find((track) => track.id === trackId);
   const selectedCover = (workspace === "templates" ? previewImages : editableCovers)
@@ -1636,7 +1711,7 @@ function VideoCreationPage() {
     const recoveryCoverId =
       videoCover?.id ||
       selectedAlbumCover?.id ||
-      editableCovers.find((cover) => cover.track_id === trackId)?.id ||
+      editableCovers.find((cover) => cover.track_id === selectedTrack?.source_track_id)?.id ||
       editableCovers.find(
         (cover) => cover.metadata?.compose && typeof cover.metadata.compose === "object",
       )?.id ||
@@ -1698,7 +1773,7 @@ function VideoCreationPage() {
   const createImages = useMutation({
     mutationFn: () => workspace === "templates"
       ? api.generateTemplatePreviews(albumId, { instruction, aspect_ratio: "16:9", candidate_count: candidateCount })
-      : api.generateCovers(albumId, { track_id: trackId || null, instruction, aspect_ratio: "16:9", candidate_count: candidateCount }),
+      : api.generateCovers(albumId, { track_id: selectedTrack?.source_track_id || null, instruction, aspect_ratio: "16:9", candidate_count: candidateCount }),
     onSuccess: (result) => setJobId(result.job_id),
   });
   const upload = useMutation({
@@ -1763,7 +1838,8 @@ function VideoCreationPage() {
       const previewAsset = await api.uploadCover(albumId, previewFrame);
       return api.renderVideo(albumId, {
         mode: "static_loop",
-        track_id: trackId,
+        track_id: selectedTrack!.source_track_id,
+        generation_id: selectedTrack!.generation_id,
         image_asset_id: previewAsset.id,
         resolution: "1920x1080",
         show_title: false,
@@ -1825,7 +1901,7 @@ function VideoCreationPage() {
       setSelectedTemplateId(template.id);
       setTemplateName(template.name);
       queryClient.invalidateQueries({
-        queryKey: ["albums", albumId, "video-templates"],
+        queryKey: ["video-templates"],
       });
     },
   });
@@ -1839,7 +1915,7 @@ function VideoCreationPage() {
       preview_asset_id: coverId || null,
     }),
     onSuccess: () => queryClient.invalidateQueries({
-      queryKey: ["albums", albumId, "video-templates"],
+      queryKey: ["video-templates"],
     }),
   });
   const deleteTemplate = useMutation({
@@ -1848,7 +1924,7 @@ function VideoCreationPage() {
       setSelectedTemplateId("");
       setTemplateName("");
       queryClient.invalidateQueries({
-        queryKey: ["albums", albumId, "video-templates"],
+        queryKey: ["video-templates"],
       });
     },
   });
@@ -1866,13 +1942,13 @@ function VideoCreationPage() {
       setSaveTemplateName("");
       setSelectedTemplateId(template.id);
       queryClient.invalidateQueries({
-        queryKey: ["albums", albumId, "video-templates"],
+        queryKey: ["video-templates"],
       });
     },
   });
   const renderBatch = useMutation({
     mutationFn: () => api.renderVideosBatch(albumId, {
-      track_ids: batchSelected,
+      generation_ids: batchSelected,
       template_id: batchFallbackTemplateId || null,
       edit_mode: batchEditMode,
       missing_edit_action: batchMissingEditAction,
@@ -2060,8 +2136,8 @@ function VideoCreationPage() {
     : defaultCompose;
   const batchPlan = wizardTracks.map((track) => {
     const existingVideo = videoForTrack(track.id);
-    const savedEdit = savedEditForTrack(track.id);
-    const selectedImage = selectedImageForTrack(track.id);
+    const savedEdit = savedEditForTrack(track.source_track_id);
+    const selectedImage = selectedImageForTrack(track.source_track_id);
     const skippedForVideo = Boolean(existingVideo && !batchOverwriteVideos);
     const usesSavedEdit = batchEditMode !== "template_only" && Boolean(savedEdit);
     const missingEdit = !usesSavedEdit && (
@@ -2174,7 +2250,7 @@ function VideoCreationPage() {
         <EmptyState
           icon={<Music2 size={36} />}
           title="선택된 음원이 없습니다."
-          description="노래 만들기에서 트랙별 최종 후보를 먼저 선택하세요."
+          description="노래 만들기에서 영상으로 만들 음원을 먼저 선택하세요."
           action={<Link className="button primary" to={`/albums/${albumId}/tracks`}>노래 만들기로 이동</Link>}
         />
       ) : (
@@ -3004,8 +3080,8 @@ function VideoCreationPage() {
                 </div>
                 <div className="batch-progress-bar"><span style={{ width: `${job.data?.progress || 3}%` }} /></div>
                 <div className="batch-progress-list">
-                  {(batchActivity?.tracks || wizardTracks.map((track) => ({ track_id: track.id, title: track.title, status: "waiting", message: "대기 중" }))).map((item) => (
-                    <div key={item.track_id} className={item.status}>
+                  {(batchActivity?.tracks || wizardTracks.map((track) => ({ track_id: track.source_track_id, generation_id: track.generation_id, title: track.title, status: "waiting", message: "대기 중" }))).map((item) => (
+                    <div key={item.generation_id || item.track_id} className={item.status}>
                       <span className="batch-status-icon">
                         {item.status === "completed" ? <CircleCheck size={17} /> : item.status === "failed" ? <X size={17} /> : item.status === "waiting" || item.status === "skipped" ? <Pause size={17} /> : <LoaderCircle size={17} className="spin" />}
                       </span>
