@@ -277,6 +277,11 @@ class AlbumVideoRenderRequest(BaseModel):
     transition: Literal["none", "fade"] = "fade"
     transition_seconds: float = Field(default=1.0, ge=0, le=5)
     resolution: Literal["1920x1080", "1280x720"] = "1920x1080"
+    repeat_count: int = Field(default=1, ge=1, le=20)
+
+
+class VideoDurationRequest(BaseModel):
+    video_asset_ids: list[str] = Field(min_length=1)
 
 
 class JobAccepted(BaseModel):

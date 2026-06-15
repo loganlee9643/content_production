@@ -3762,6 +3762,7 @@ function AlbumVideoPage() {
   const [transition, setTransition] = useState<"none" | "fade">("fade");
   const [transitionSeconds, setTransitionSeconds] = useState(1);
   const [resolution, setResolution] = useState<"1920x1080" | "1280x720">("1920x1080");
+  const [repeatCount, setRepeatCount] = useState(1);
   const [jobId, setJobId] = useState<string | null>(null);
   const job = useJob(jobId);
   const trackOrder = new Map((tracks.data || []).map((track) => [track.id, track.sequence]));
@@ -3802,6 +3803,17 @@ function AlbumVideoPage() {
     .filter((asset) => asset.type === "album_video")
     .sort((left, right) => right.created_at.localeCompare(left.created_at))[0];
   const orderKey = trackVideos.map((video) => video.id).join(",");
+  const videoDurations = useQuery({
+    queryKey: ["albums", albumId, "video-durations", orderKey],
+    queryFn: () => api.getVideoDurations(albumId, trackVideos.map((video) => video.id)),
+    enabled: Boolean(trackVideos.length),
+    staleTime: Infinity,
+  });
+  const selectedDuration = orderedAssetIds.reduce(
+    (total, assetId) => total + (videoDurations.data?.[assetId] || 0),
+    0,
+  );
+  const outputDuration = selectedDuration * repeatCount;
 
   useEffect(() => {
     setOrderedAssetIds((current) => {
@@ -3824,6 +3836,7 @@ function AlbumVideoPage() {
       transition,
       transition_seconds: transition === "fade" ? transitionSeconds : 0,
       resolution,
+      repeat_count: repeatCount,
     }),
     onSuccess: (accepted) => setJobId(accepted.job_id),
   });
@@ -3859,7 +3872,7 @@ function AlbumVideoPage() {
         title="전체 영상 만들기"
         description="완성된 트랙 영상을 원하는 순서로 연결해 하나의 영상으로 만드세요."
       />
-      <ErrorNotice error={combine.error || job.error} />
+      <ErrorNotice error={combine.error || job.error || videoDurations.error} />
       <JobPanel job={job.data} />
       <div className="album-video-layout">
         <section className="panel album-video-tracks">
@@ -3923,8 +3936,20 @@ function AlbumVideoPage() {
               <option value="1280x720">1280 × 720</option>
             </select>
           </Field>
+          <Field label="전체 영상 반복">
+            <input
+              type="number"
+              min={1}
+              max={20}
+              value={repeatCount}
+              onChange={(event) => setRepeatCount(Math.max(1, Math.min(20, Number(event.target.value) || 1)))}
+            />
+          </Field>
           <div className="album-video-summary">
             <span>선택 영상</span><strong>{orderedAssetIds.length}개</strong>
+            <span>1회 길이</span><strong>{videoDurations.isLoading ? "계산 중" : formatDuration(selectedDuration)}</strong>
+            <span>반복 횟수</span><strong>{repeatCount}회</strong>
+            <span>예상 최종 길이</span><strong>{videoDurations.isLoading ? "계산 중" : formatDuration(outputDuration)}</strong>
             <span>연결 방식</span><strong>{transition === "fade" ? `페이드 ${transitionSeconds}초` : "전환 없음"}</strong>
           </div>
           <Button

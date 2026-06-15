@@ -348,12 +348,18 @@ export const api = {
       transition: "none" | "fade";
       transition_seconds: number;
       resolution: "1920x1080" | "1280x720";
+      repeat_count: number;
     },
   ) =>
     request<{ job_id: string; status: string }>(
       `/albums/${albumId}/videos/combine`,
       { method: "POST", body: json(payload) },
     ),
+  getVideoDurations: (albumId: string, videoAssetIds: string[]) =>
+    request<Record<string, number>>(`/albums/${albumId}/videos/durations`, {
+      method: "POST",
+      body: json({ video_asset_ids: videoAssetIds }),
+    }),
   generateCovers: (
     albumId: string,
     payload: {

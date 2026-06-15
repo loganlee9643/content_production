@@ -2445,6 +2445,9 @@ def run_video_render(job_id: str, album_id: str, request: Any) -> None:
                 f"FFmpeg 영상 렌더링에 실패했습니다 (종료 코드 {completed.returncode}). "
                 f"{stderr_tail[-1200:]}"
             )
+        video_metadata = _model_dump(request)
+        if duration:
+            video_metadata["duration_seconds"] = duration
         asset = create_asset(
             album_id=album_id,
             track_id=track["id"],
@@ -2453,7 +2456,7 @@ def run_video_render(job_id: str, album_id: str, request: Any) -> None:
             path=output_path,
             original_name=f"{generation.get('title') or track['title']}.mp4",
             content_type="video/mp4",
-            metadata=_model_dump(request),
+            metadata=video_metadata,
         )
         set_job_succeeded(job_id, {"asset_id": asset["id"]})
         logger.info(
@@ -2947,6 +2950,15 @@ def _probe_media_duration(ffprobe: str, path: Path) -> float:
     return duration
 
 
+def probe_video_duration(path: Path) -> float:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        raise RuntimeError("ffprobe was not found on PATH")
+    if not path.is_file():
+        raise FileNotFoundError(f"Video file was not found: {path.name}")
+    return _probe_media_duration(ffprobe, path)
+
+
 def run_album_video_render(
     job_id: str,
     album_id: str,
@@ -2982,6 +2994,11 @@ def run_album_video_render(
             paths.append(path)
             durations.append(_probe_media_duration(ffprobe, path))
             set_job_progress(job_id, min(20, round(20 * (index + 1) / len(request.video_asset_ids))))
+
+        if request.repeat_count > 1:
+            assets = assets * request.repeat_count
+            paths = paths * request.repeat_count
+            durations = durations * request.repeat_count
 
         width_text, height_text = request.resolution.split("x", 1)
         width, height = int(width_text), int(height_text)
@@ -3090,6 +3107,7 @@ def run_album_video_render(
                 "track_ids": track_ids,
                 "source_video_asset_ids": list(request.video_asset_ids),
                 "duration_seconds": total_duration,
+                "repeat_count": request.repeat_count,
             },
         )
         set_job_succeeded(

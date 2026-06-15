@@ -1069,6 +1069,26 @@ async def combine_album_videos(
     return data({"job_id": job["id"], "status": job["status"]})
 
 
+@router.post("/albums/{album_id}/videos/durations")
+async def get_video_durations(
+    album_id: str,
+    payload: schemas.VideoDurationRequest,
+):
+    require("albums", album_id, "Album")
+    durations: dict[str, float] = {}
+    for asset_id in payload.video_asset_ids:
+        asset = require("assets", asset_id, "Video asset")
+        if asset["album_id"] != album_id or asset["type"] != "video":
+            raise HTTPException(status_code=409, detail="Invalid video asset")
+        metadata_duration = (asset.get("metadata") or {}).get("duration_seconds")
+        if isinstance(metadata_duration, (int, float)) and metadata_duration > 0:
+            durations[asset_id] = float(metadata_duration)
+            continue
+        path = db.STORAGE_DIR / asset["storage_key"]
+        durations[asset_id] = services.probe_video_duration(path)
+    return data(durations)
+
+
 @router.get("/assets/{asset_id}/download")
 async def download_asset(asset_id: str):
     asset = require("assets", asset_id, "Asset")

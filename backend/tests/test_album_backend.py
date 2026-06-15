@@ -629,6 +629,7 @@ class AlbumBackendTest(unittest.TestCase):
                     video_asset_ids=[assets[1]["id"], assets[0]["id"]],
                     transition="fade",
                     transition_seconds=1,
+                    repeat_count=2,
                 ),
             )
 
@@ -640,9 +641,10 @@ class AlbumBackendTest(unittest.TestCase):
             result_asset["metadata"]["source_video_asset_ids"],
             [assets[1]["id"], assets[0]["id"]],
         )
-        self.assertEqual(result_asset["metadata"]["duration_seconds"], 30.0)
+        self.assertEqual(result_asset["metadata"]["duration_seconds"], 60.0)
+        self.assertEqual(result_asset["metadata"]["repeat_count"], 2)
         self.assertTrue(
-            any("concat=n=2:v=1:a=1[vout][aout]" in value for value in captured_command)
+            any("concat=n=4:v=1:a=1[vout][aout]" in value for value in captured_command)
         )
         self.assertTrue(any("fade=t=in" in value for value in captured_command))
 
