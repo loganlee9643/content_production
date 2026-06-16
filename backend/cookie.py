@@ -30,6 +30,12 @@ class SunoCookie:
             if separator and name:
                 self.cookie[name] = value
 
+    def replace_auth(self, session_id: str, cookie_str: str):
+        self.cookie.clear()
+        self.session_id = session_id
+        self.token = None
+        self.load_cookie(cookie_str)
+
     def get_cookie(self):
         return "; ".join(f"{name}={value}" for name, value in self.cookie.items())
 

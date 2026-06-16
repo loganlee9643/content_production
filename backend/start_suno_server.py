@@ -99,18 +99,6 @@ def _load_or_capture_auth(
     auth_source: str = "auto",
 ) -> SunoAuth:
     if not force_login:
-        load_dotenv(ROOT / ".env", override=True)
-        env_auth = SunoAuth(
-            session_id=os.getenv("SESSION_ID", "").strip(),
-            cookie=os.getenv("COOKIE", "").strip(),
-            captured_at=0.0,
-        )
-        if auth_source in {"auto", "env"} and validate_auth(env_auth):
-            print("Using Suno login from .env.")
-            return env_auth
-        if auth_source == "env":
-            raise SunoAuthError("Suno login in .env is not valid.")
-
         auth = load_auth(AUTH_FILE) if auth_source in {"auto", "saved"} else None
         if auth is not None:
             print("Checking saved Suno login...")
@@ -120,6 +108,19 @@ def _load_or_capture_auth(
             print("Saved Suno login has expired.")
         if auth_source == "saved":
             raise SunoAuthError("Saved Suno login is missing or not valid.")
+
+        load_dotenv(ROOT / ".env", override=True)
+        env_auth = SunoAuth(
+            session_id=os.getenv("SESSION_ID", "").strip(),
+            cookie=os.getenv("COOKIE", "").strip(),
+            captured_at=0.0,
+        )
+        if auth_source in {"auto", "env"} and validate_auth(env_auth):
+            save_auth(AUTH_FILE, env_auth)
+            print("Imported Suno login from .env.")
+            return env_auth
+        if auth_source == "env":
+            raise SunoAuthError("Suno login in .env is not valid.")
 
     auth = capture_auth_with_browser(
         profile_dir=PROFILE_DIR,
@@ -145,7 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("auto", "env", "saved"),
         default="auto",
         help=(
-            "Authentication source: auto prefers .env, env only uses .env, "
+            "Authentication source: auto prefers saved auth, env only uses .env, "
             "saved only uses .auth/suno-auth.json."
         ),
     )

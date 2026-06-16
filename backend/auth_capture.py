@@ -278,17 +278,22 @@ def capture_auth_with_browser(
                 page.reload(wait_until="domcontentloaded", timeout=60000)
             if wait_for_browser_close:
                 print("Review or complete Suno login in the opened browser window.")
-                print("When ready, close that browser window to continue.")
+                print(
+                    "If generation was rejected, open/create page warmup may be "
+                    "needed: refresh Suno create or generate once, then close this "
+                    "browser window to continue."
+                )
             else:
                 print("Complete Suno login in the opened Chrome or Edge window.")
                 print("Authentication will be saved automatically after login is detected.")
             last_error = ""
             latest_auth: SunoAuth | None = None
             login_detected = False
+            last_wait_log = 0.0
             while time.monotonic() < deadline:
                 if captured_auth:
                     latest_auth = captured_auth[0]
-                if browser_process.poll() is not None or page.is_closed():
+                if page.is_closed():
                     if latest_auth is not None:
                         return latest_auth
                     raise SunoAuthError(
@@ -315,8 +320,14 @@ def capture_auth_with_browser(
                     if not wait_for_browser_close:
                         return latest_auth
                     if not login_detected:
-                        print("Suno login detected. Close the browser window when ready.")
+                        print(
+                            "Suno login detected. Finish any create-page warmup, "
+                            "then close the browser window when ready."
+                        )
                         login_detected = True
+                elif wait_for_browser_close and time.monotonic() - last_wait_log > 10:
+                    print("Waiting for Suno login/create-page warmup in the opened browser...")
+                    last_wait_log = time.monotonic()
                 time.sleep(1)
             detail = f" Last error: {last_error}" if last_error else ""
             raise SunoAuthError(f"Suno login was not detected in time.{detail}")

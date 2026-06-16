@@ -24,6 +24,12 @@ from PIL import Image, ImageColor, ImageDraw, ImageEnhance, ImageFilter, ImageFo
 from PIL import ImageChops, ImageStat
 
 from album_backend import db, schemas
+from auth_capture import (
+    SunoAuthError,
+    capture_auth_with_browser,
+    save_auth,
+    validate_auth,
+)
 from cookie import suno_auth, update_token
 from utils import (
     SunoAPIError,
@@ -38,11 +44,15 @@ WORKSPACE_ROOT = ROOT.parents[1]
 VIDEO_ICON_DIR = Path(os.getenv("VIDEO_ICON_DIR", ROOT / "images")).resolve()
 VIDEO_ICON_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".svg"}
 DEFAULT_SUNO_MODEL = os.getenv("SUNO_MODEL", "chirp-fenix")
+SUNO_AUTH_FILE = ROOT / ".auth" / "suno-auth.json"
+SUNO_PROFILE_DIR = ROOT / ".auth" / "native-browser-profile"
+SUNO_LOGIN_TIMEOUT_SECONDS = float(os.getenv("SUNO_LOGIN_TIMEOUT_SECONDS", "900"))
 SUNO_MAX_TITLE_CHARS = 80
 SUNO_MAX_STYLE_CHARS = 200
 SUNO_MAX_NEGATIVE_STYLE_CHARS = 1000
 SUNO_MAX_CUSTOM_PROMPT_CHARS = 5000
 logger = logging.getLogger("album_backend.services")
+_suno_reauth_lock = asyncio.Lock()
 if str(WORKSPACE_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_ROOT))
 
@@ -1590,6 +1600,42 @@ def _suno_token() -> str:
     return token
 
 
+async def _refresh_suno_auth_with_warmup(rejected_cookie: str) -> str:
+    async with _suno_reauth_lock:
+        if suno_auth.get_cookie() != rejected_cookie:
+            update_token(suno_auth)
+            return _suno_token()
+
+        logger.warning(
+            "Suno generation validation failed; opening browser for login/warmup"
+        )
+        try:
+            auth = await asyncio.to_thread(
+                capture_auth_with_browser,
+                profile_dir=SUNO_PROFILE_DIR,
+                timeout_sec=SUNO_LOGIN_TIMEOUT_SECONDS,
+                wait_for_browser_close=True,
+            )
+            valid = await asyncio.to_thread(validate_auth, auth)
+            if not valid:
+                raise SunoAuthError("The refreshed Suno login could not be validated.")
+            await asyncio.to_thread(save_auth, SUNO_AUTH_FILE, auth)
+            os.environ["SESSION_ID"] = auth.session_id
+            os.environ["COOKIE"] = auth.cookie
+            suno_auth.replace_auth(auth.session_id, auth.cookie)
+            await asyncio.to_thread(update_token, suno_auth)
+        except Exception as exc:
+            logger.exception("Suno login/warmup refresh failed")
+            raise SunoGenerationVerificationError(
+                "Suno 로그인/생성 페이지 워밍업에 실패했습니다. 열린 Suno 창에서 "
+                "로그인 후 생성 페이지를 새로고침하거나 직접 생성 테스트를 마치고 "
+                "창을 닫은 뒤 다시 시도해 주세요."
+            ) from exc
+
+        logger.info("Suno login/warmup refreshed and applied to the running server")
+        return _suno_token()
+
+
 def _validate_suno_payload(payload: dict[str, Any]) -> None:
     limits = (
         ("title", SUNO_MAX_TITLE_CHARS),
@@ -1648,8 +1694,9 @@ async def _submit_suno_generation(payload: dict[str, Any]) -> tuple[Any, str]:
     logger.info("Suno generation submit attempt=1 summary=%s", summary)
     update_token(suno_auth)
     token = _suno_token()
+    submitted_cookie = suno_auth.get_cookie()
     try:
-        response = await generate_music(payload, token)
+        response = await generate_music(payload, token, submitted_cookie)
         logger.info(
             "Suno generation accepted attempt=1 request_id=%s clip_count=%s",
             response.get("id") if isinstance(response, dict) else None,
@@ -1668,10 +1715,31 @@ async def _submit_suno_generation(payload: dict[str, Any]) -> tuple[Any, str]:
         )
         if exc.error_type != "token_validation_failed":
             raise
-        raise SunoGenerationVerificationError(
-            "Suno가 원본 형식의 음악 생성 요청을 거부했습니다. "
-            "SESSION_ID와 COOKIE를 갱신한 뒤 서버를 다시 시작해 주세요."
-        ) from exc
+        token = await _refresh_suno_auth_with_warmup(submitted_cookie)
+        logger.info("Suno generation submit attempt=2 after browser warmup")
+        try:
+            response = await generate_music(payload, token, suno_auth.get_cookie())
+        except SunoAPIError as retry_exc:
+            logger.error(
+                "Suno generation rejected after browser warmup status=%s "
+                "error_type=%s detail=%r response_body=%r",
+                retry_exc.status_code,
+                retry_exc.error_type,
+                retry_exc.upstream_detail,
+                retry_exc.body[:2000],
+            )
+            if retry_exc.error_type == "token_validation_failed":
+                raise SunoGenerationVerificationError(
+                    "Suno 로그인/생성 페이지 워밍업 후에도 음악 생성 검증이 거부됐습니다. "
+                    "Suno 웹에서 직접 생성이 되는지 확인한 뒤 다시 시도해 주세요."
+                ) from retry_exc
+            raise
+        logger.info(
+            "Suno generation accepted attempt=2 request_id=%s clip_count=%s",
+            response.get("id") if isinstance(response, dict) else None,
+            len(response.get("clips") or []) if isinstance(response, dict) else 0,
+        )
+        return response, token
 
 
 def _feed_items(payload: Any) -> list[dict[str, Any]]:
