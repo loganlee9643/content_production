@@ -1217,42 +1217,115 @@ function titleStartX(compose: typeof defaultCompose) {
 }
 
 const videoFonts: Record<string, string> = {
-  malgun: '"Malgun Gothic", "Noto Sans KR", sans-serif',
-  noto_sans_kr: '"Noto Sans KR", "Malgun Gothic", sans-serif',
-  noto_serif_kr: '"Noto Serif KR", "Batang", serif',
-  nanum_gothic: '"NanumGothic", "Malgun Gothic", sans-serif',
-  nanum_pen: '"Nanum Pen Script", "NanumPen", "Malgun Gothic", cursive',
-  han_dotum: '"Hancom Dotum", "HANDotum", "Malgun Gothic", sans-serif',
-  han_batang: '"Hancom Batang", "HANBatang", "Batang", serif',
-  batang: '"Batang", "Noto Serif KR", serif',
-  arial: 'Arial, "Malgun Gothic", sans-serif',
-  roboto: 'Roboto, "Noto Sans KR", "Malgun Gothic", sans-serif',
-  bebas: '"Bebas Neue", "Noto Sans KR", "Malgun Gothic", sans-serif',
-  anton: 'Anton, "Noto Sans KR", "Malgun Gothic", sans-serif',
-  cinzel: 'Cinzel, "Noto Serif KR", "Batang", serif',
-  georgia: 'Georgia, "Noto Serif KR", "Batang", serif',
-  impact: 'Impact, "Noto Sans KR", "Malgun Gothic", sans-serif',
-  consolas: 'Consolas, "Noto Sans KR", "Malgun Gothic", monospace',
+  malgun: '"Bundled Noto Sans KR", "Malgun Gothic", sans-serif',
+  noto_sans_kr: '"Bundled Noto Sans KR", "Malgun Gothic", sans-serif',
+  noto_serif_kr: '"Bundled Noto Serif KR", "Batang", serif',
+  nanum_gothic: '"Bundled Nanum Gothic", "Malgun Gothic", sans-serif',
+  nanum_pen: '"Bundled Nanum Pen Script", "Malgun Gothic", cursive',
+  han_dotum: '"Bundled Noto Sans KR", "Malgun Gothic", sans-serif',
+  han_batang: '"Bundled Noto Serif KR", "Batang", serif',
+  batang: '"Bundled Noto Serif KR", "Batang", serif',
+  arial: '"Bundled Roboto", Arial, "Malgun Gothic", sans-serif',
+  roboto: '"Bundled Roboto", "Noto Sans KR", "Malgun Gothic", sans-serif',
+  bebas: '"Bundled Bebas Neue", "Noto Sans KR", "Malgun Gothic", sans-serif',
+  anton: '"Bundled Anton", "Noto Sans KR", "Malgun Gothic", sans-serif',
+  cinzel: '"Bundled Cinzel", "Noto Serif KR", "Batang", serif',
+  georgia: '"Bundled Noto Serif KR", Georgia, "Noto Serif KR", serif',
+  impact: '"Bundled Anton", Impact, "Noto Sans KR", "Malgun Gothic", sans-serif',
+  consolas: '"Bundled Roboto", Consolas, "Noto Sans KR", "Malgun Gothic", monospace',
+  black_han_sans: '"Bundled Black Han Sans", "Bundled Noto Sans KR", sans-serif',
+  do_hyeon: '"Bundled Do Hyeon", "Bundled Noto Sans KR", sans-serif',
+  jua: '"Bundled Jua", "Bundled Noto Sans KR", sans-serif',
+  gowun_dodum: '"Bundled Gowun Dodum", "Bundled Noto Sans KR", sans-serif',
+  gowun_batang: '"Bundled Gowun Batang", "Bundled Noto Serif KR", serif',
+  song_myung: '"Bundled Song Myung", "Bundled Noto Serif KR", serif',
+  poor_story: '"Bundled Poor Story", "Bundled Noto Sans KR", cursive',
+  gaegu: '"Bundled Gaegu", "Bundled Noto Sans KR", cursive',
+  single_day: '"Bundled Single Day", "Bundled Noto Sans KR", cursive',
+  montserrat: '"Bundled Montserrat", "Bundled Noto Sans KR", sans-serif',
+  oswald: '"Bundled Oswald", "Bundled Noto Sans KR", sans-serif',
+  playfair: '"Bundled Playfair Display", "Bundled Noto Serif KR", serif',
+  windows_malgun: '"Malgun Gothic", "맑은 고딕", sans-serif',
+  windows_gulim: 'Gulim, "굴림", sans-serif',
+  windows_dotum: 'Dotum, "돋움", sans-serif',
+  windows_batang: 'Batang, "바탕", serif',
+  windows_gungsuh: 'Gungsuh, "궁서", serif',
+  windows_arial: 'Arial, "Malgun Gothic", sans-serif',
+  windows_georgia: 'Georgia, "Malgun Gothic", serif',
+  windows_impact: 'Impact, "Malgun Gothic", sans-serif',
+  windows_consolas: 'Consolas, "Malgun Gothic", monospace',
 };
 
 const videoFontOptions = [
-  ["malgun", "맑은 고딕"],
-  ["noto_sans_kr", "Noto Sans KR"],
-  ["noto_serif_kr", "Noto Serif KR"],
+  ["noto_sans_kr", "노토 산스 KR"],
+  ["noto_serif_kr", "노토 세리프 KR"],
   ["nanum_gothic", "나눔고딕"],
   ["nanum_pen", "나눔펜"],
-  ["han_dotum", "한컴 돋움"],
-  ["han_batang", "한컴 바탕"],
-  ["batang", "바탕"],
-  ["arial", "Arial"],
+  ["black_han_sans", "검은고딕"],
+  ["do_hyeon", "도현"],
+  ["jua", "주아"],
+  ["gowun_dodum", "고운돋움"],
+  ["gowun_batang", "고운바탕"],
+  ["song_myung", "송명"],
+  ["poor_story", "푸어스토리"],
+  ["gaegu", "개구"],
+  ["single_day", "싱글데이"],
   ["roboto", "Roboto"],
+  ["montserrat", "Montserrat"],
+  ["oswald", "Oswald"],
   ["bebas", "Bebas Neue"],
   ["anton", "Anton"],
   ["cinzel", "Cinzel"],
-  ["georgia", "Georgia"],
-  ["impact", "Impact"],
-  ["consolas", "Consolas"],
+  ["playfair", "Playfair Display"],
 ] as const;
+
+const windowsVideoFontOptions = [
+  ["windows_malgun", "맑은 고딕"],
+  ["windows_gulim", "굴림"],
+  ["windows_batang", "바탕"],
+  ["windows_arial", "Arial"],
+  ["windows_georgia", "Georgia"],
+  ["windows_impact", "Impact"],
+  ["windows_consolas", "Consolas"],
+] as const;
+
+const isWindowsClient = typeof navigator !== "undefined" && /Windows|Win32|Win64/i.test(
+  `${navigator.userAgent} ${navigator.platform}`,
+);
+
+const canonicalVideoFontKeys: Record<string, keyof typeof videoFonts> = {
+  malgun: "noto_sans_kr",
+  han_dotum: "noto_sans_kr",
+  arial: "roboto",
+  consolas: "roboto",
+  han_batang: "noto_serif_kr",
+  batang: "noto_serif_kr",
+  georgia: "noto_serif_kr",
+  impact: "anton",
+};
+
+function canonicalVideoFontKey(value: string) {
+  return canonicalVideoFontKeys[value] || value;
+}
+
+function videoFontStyle(value: string) {
+  return { fontFamily: videoFonts[canonicalVideoFontKey(value)] || videoFonts.noto_sans_kr };
+}
+
+function videoFontOptionNodes() {
+  const bundledOptions = videoFontOptions.map(([value, label]) => (
+    <option key={value} value={value} style={videoFontStyle(value)}>{label}</option>
+  ));
+  if (!isWindowsClient) return bundledOptions;
+  return [
+    <optgroup key="bundled" label="번들 폰트">{bundledOptions}</optgroup>,
+    <optgroup key="windows" label="Windows 기본 폰트">
+      {windowsVideoFontOptions.map(([value, label]) => (
+        <option key={value} value={value} style={videoFontStyle(value)}>{label}</option>
+      ))}
+    </optgroup>,
+  ];
+}
 
 const videoIcons = ["", "♪", "♫", "★", "♥", "☾", "☀", "☁", "✦", "✿", "●", "◆"];
 const VIDEO_CANVAS_WIDTH = 1920;
@@ -1625,6 +1698,7 @@ function VideoCreationPage() {
   );
   const [trackId, setTrackId] = useState("");
   const [coverId, setCoverId] = useState("");
+  const [trackCoverIds, setTrackCoverIds] = useState<Record<string, string>>({});
   const [instruction, setInstruction] = useState("");
   const [candidateCount, setCandidateCount] = useState(1);
   const [compose, setCompose] = useState(defaultCompose);
@@ -1680,6 +1754,21 @@ function VideoCreationPage() {
   const currentVideo = trackId ? videoForTrack(trackId) : undefined;
   const isJobActive = ["pending", "running"].includes(job.data?.status || "");
   const previewScale = previewWidth / VIDEO_CANVAS_WIDTH;
+  const selectTrackImage = useMutation({
+    mutationFn: (id: string) => {
+      if (!selectedTrack) throw new Error("No selected track");
+      return api.selectImageForTrack(albumId, id, {
+        track_id: selectedTrack.source_track_id,
+        generation_id: selectedTrack.generation_id,
+      });
+    },
+    onSuccess: (asset) => {
+      if (trackId) {
+        setTrackCoverIds((current) => ({ ...current, [trackId]: asset.id }));
+      }
+      queryClient.invalidateQueries({ queryKey: qk.covers(albumId) });
+    },
+  });
 
   useEffect(() => { if (!trackId && eligible[0]) setTrackId(eligible[0].id); }, [eligible, trackId]);
   useEffect(() => {
@@ -1707,22 +1796,29 @@ function VideoCreationPage() {
     const videoCover = typeof videoCoverId === "string"
       ? editableCovers.find((cover) => cover.id === videoCoverId)
       : undefined;
-    const selectedAlbumCover = editableCovers.find((cover) => cover.id === album.data?.selected_cover_asset_id);
+    const persistedTrackCover = editableCovers.find((cover) =>
+      cover.metadata?.selected_for_track_id === selectedTrack?.source_track_id
+      && cover.metadata?.selected_for_generation_id === selectedTrack?.generation_id
+    );
+    const localTrackCover = editableCovers.find((cover) => cover.id === trackCoverIds[trackId])
+      || persistedTrackCover;
+    const trackGeneratedCover = editableCovers.find((cover) => cover.track_id === selectedTrack?.source_track_id);
     const recoveryCoverId =
+      localTrackCover?.id ||
       videoCover?.id ||
-      selectedAlbumCover?.id ||
-      editableCovers.find((cover) => cover.track_id === selectedTrack?.source_track_id)?.id ||
-      editableCovers.find(
-        (cover) => cover.metadata?.compose && typeof cover.metadata.compose === "object",
-      )?.id ||
+      trackGeneratedCover?.id ||
       editableCovers[0]?.id ||
       "";
-    const recoveryCover = editableCovers.find((cover) => cover.id === recoveryCoverId);
-    const savedCompose = trackVideo?.metadata?.compose || recoveryCover?.metadata?.compose;
+    const hasLocalImageOverride = Boolean(localTrackCover);
+    const savedCompose = hasLocalImageOverride
+      ? localTrackCover?.metadata?.compose
+      : trackVideo?.metadata?.compose
+        || videoCover?.metadata?.compose
+        || trackGeneratedCover?.metadata?.compose;
 
     setCoverId(recoveryCoverId);
-    setRenderedAssetId(trackVideo?.id || "");
-    setPreviewMode(trackVideo ? "video" : "design");
+    setRenderedAssetId(hasLocalImageOverride ? "" : trackVideo?.id || "");
+    setPreviewMode(trackVideo && !hasLocalImageOverride ? "video" : "design");
     if (savedCompose && typeof savedCompose === "object") {
       setCompose(composeWithDefaults(savedCompose as Partial<typeof defaultCompose>));
     } else {
@@ -1740,6 +1836,7 @@ function VideoCreationPage() {
     workspace,
     selectedTemplateId,
     selectedTrack?.title,
+    trackCoverIds,
   ]);
 
   useEffect(() => {
@@ -1750,7 +1847,12 @@ function VideoCreationPage() {
       const assetIds = job.data.result?.asset_ids;
       const assetId = job.data.result?.asset_id;
       if (Array.isArray(assetIds) && assetIds[0]) {
-        setCoverId(String(assetIds[0]));
+        const nextCoverId = String(assetIds[0]);
+        setCoverId(nextCoverId);
+        if (workspace === "production" && trackId) {
+          setTrackCoverIds((current) => ({ ...current, [trackId]: nextCoverId }));
+          selectTrackImage.mutate(nextCoverId);
+        }
         setPreviewMode("design");
       }
       if (assetId) {
@@ -1758,7 +1860,7 @@ function VideoCreationPage() {
         setPreviewMode("video");
       }
     }
-  }, [job.data?.status, albumId, queryClient]);
+  }, [job.data?.status, albumId, queryClient, trackId, workspace]);
 
   useEffect(() => {
     const preview = previewRef.current;
@@ -1782,36 +1884,35 @@ function VideoCreationPage() {
       : api.uploadCover(albumId, file),
     onSuccess: (asset) => {
       setCoverId(asset.id);
+      if (workspace === "production" && trackId) {
+        setTrackCoverIds((current) => ({ ...current, [trackId]: asset.id }));
+        selectTrackImage.mutate(asset.id);
+      }
       setRenderedAssetId("");
       setPreviewMode("design");
       queryClient.invalidateQueries({ queryKey: qk.covers(albumId) });
       queryClient.invalidateQueries({ queryKey: qk.templatePreviews(albumId) });
     },
   });
-  const selectCover = useMutation({
-    mutationFn: (id: string) => api.selectCover(albumId, id),
-    onSuccess: (_, id) => {
-      const nextCover = covers.data?.find((cover) => cover.id === id);
-      const savedCompose = nextCover?.metadata?.compose;
-      setCoverId(id);
-      setRenderedAssetId("");
-      setPreviewMode("design");
-      setCompose(
-        savedCompose && typeof savedCompose === "object"
-          ? composeWithDefaults(savedCompose as Partial<typeof defaultCompose>)
-          : { ...defaultCompose, artist_name: album.data?.artist_name || "" },
-      );
-      queryClient.invalidateQueries({ queryKey: qk.album(albumId) });
-    },
-  });
   const selectEditorImage = (id: string) => {
+    const nextCover = (workspace === "templates" ? previewImages : editableCovers)
+      .find((cover) => cover.id === id);
+    const savedCompose = nextCover?.metadata?.compose;
+    setCoverId(id);
+    setRenderedAssetId("");
+    setPreviewMode("design");
+    if (workspace === "production" && trackId) {
+      setTrackCoverIds((current) => ({ ...current, [trackId]: id }));
+      selectTrackImage.mutate(id);
+    }
     if (workspace === "templates") {
-      setCoverId(id);
-      setRenderedAssetId("");
-      setPreviewMode("design");
       return;
     }
-    selectCover.mutate(id);
+    setCompose(
+      savedCompose && typeof savedCompose === "object"
+        ? composeWithDefaults(savedCompose as Partial<typeof defaultCompose>)
+        : { ...defaultCompose, artist_name: album.data?.artist_name || "" },
+    );
   };
   const saveCompose = useMutation({
     mutationFn: async () => {
@@ -1819,7 +1920,6 @@ function VideoCreationPage() {
         ...compose,
         artist_name: compose.artist_name,
       });
-      await api.selectCover(albumId, coverId);
       return saved;
     },
     onSuccess: () => {
@@ -2240,7 +2340,7 @@ function VideoCreationPage() {
       />
       <JobPanel job={job.data} />
       <ErrorNotice error={
-        createImages.error || upload.error || selectCover.error || saveCompose.error
+        createImages.error || upload.error || selectTrackImage.error || saveCompose.error
         || render.error || videoImageIcons.error || videoTemplates.error || templatePreviews.error
         || createTemplate.error || updateTemplate.error
         || deleteTemplate.error || saveCurrentAsTemplate.error || renderBatch.error
@@ -2671,8 +2771,12 @@ function VideoCreationPage() {
                         </Field>
                         <div className="inline-fields">
                           <Field label="글꼴">
-                            <select value={compose.font_family} onChange={(e) => updateCompose("font_family", e.target.value)}>
-                              {videoFontOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                            <select
+                              value={canonicalVideoFontKey(compose.font_family)}
+                              style={videoFontStyle(compose.font_family)}
+                              onChange={(e) => updateCompose("font_family", e.target.value)}
+                            >
+                              {videoFontOptionNodes()}
                             </select>
                           </Field>
                           <Field label="색상"><input type="color" value={compose.text_color} onChange={(e) => updateCompose("text_color", e.target.value)} /></Field>
@@ -2709,8 +2813,12 @@ function VideoCreationPage() {
                         </Field>
                         <div className="inline-fields">
                           <Field label="글꼴">
-                            <select value={compose.artist_font_family} onChange={(e) => updateCompose("artist_font_family", e.target.value)}>
-                              {videoFontOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                            <select
+                              value={canonicalVideoFontKey(compose.artist_font_family)}
+                              style={videoFontStyle(compose.artist_font_family)}
+                              onChange={(e) => updateCompose("artist_font_family", e.target.value)}
+                            >
+                              {videoFontOptionNodes()}
                             </select>
                           </Field>
                           <Field label="색상"><input type="color" value={compose.artist_color} onChange={(e) => updateCompose("artist_color", e.target.value)} /></Field>
@@ -3695,7 +3803,7 @@ function ThumbnailPage() {
                 <>
                   <Field label="문자열"><textarea rows={3} value={selectedLayer.text} onChange={(event) => updateLayer(selectedLayer.id, { text: event.target.value })} /></Field>
                   <div className="two-fields">
-                    <Field label="글꼴"><select value={selectedLayer.font_family} onChange={(event) => updateLayer(selectedLayer.id, { font_family: event.target.value })}>{videoFontOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
+                    <Field label="글꼴"><select value={canonicalVideoFontKey(selectedLayer.font_family)} style={videoFontStyle(selectedLayer.font_family)} onChange={(event) => updateLayer(selectedLayer.id, { font_family: event.target.value })}>{videoFontOptionNodes()}</select></Field>
                     <Field label="정렬"><select value={selectedLayer.align} onChange={(event) => updateLayer(selectedLayer.id, { align: event.target.value as ThumbnailTextLayer["align"] })}><option value="left">왼쪽</option><option value="center">가운데</option><option value="right">오른쪽</option></select></Field>
                   </div>
                   <div className="two-fields">

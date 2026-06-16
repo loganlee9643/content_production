@@ -49,9 +49,77 @@ if str(WORKSPACE_ROOT) not in sys.path:
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 
+BUNDLED_FONT_DIR = ROOT.parent / "frontend" / "public" / "fonts"
+BUNDLED_VIDEO_FONTS = {
+    "malgun": BUNDLED_FONT_DIR / "NotoSansKR.ttf",
+    "noto_sans_kr": BUNDLED_FONT_DIR / "NotoSansKR.ttf",
+    "noto_serif_kr": BUNDLED_FONT_DIR / "NotoSerifKR.ttf",
+    "nanum_gothic": BUNDLED_FONT_DIR / "NanumGothic-Regular.ttf",
+    "nanum_pen": BUNDLED_FONT_DIR / "NanumPenScript-Regular.ttf",
+    "han_dotum": BUNDLED_FONT_DIR / "NotoSansKR.ttf",
+    "han_batang": BUNDLED_FONT_DIR / "NotoSerifKR.ttf",
+    "batang": BUNDLED_FONT_DIR / "NotoSerifKR.ttf",
+    "arial": BUNDLED_FONT_DIR / "Roboto.ttf",
+    "roboto": BUNDLED_FONT_DIR / "Roboto.ttf",
+    "bebas": BUNDLED_FONT_DIR / "BebasNeue-Regular.ttf",
+    "anton": BUNDLED_FONT_DIR / "Anton-Regular.ttf",
+    "cinzel": BUNDLED_FONT_DIR / "Cinzel.ttf",
+    "georgia": BUNDLED_FONT_DIR / "NotoSerifKR.ttf",
+    "impact": BUNDLED_FONT_DIR / "Anton-Regular.ttf",
+    "consolas": BUNDLED_FONT_DIR / "Roboto.ttf",
+    "black_han_sans": BUNDLED_FONT_DIR / "BlackHanSans-Regular.ttf",
+    "do_hyeon": BUNDLED_FONT_DIR / "DoHyeon-Regular.ttf",
+    "jua": BUNDLED_FONT_DIR / "Jua-Regular.ttf",
+    "gowun_dodum": BUNDLED_FONT_DIR / "GowunDodum-Regular.ttf",
+    "gowun_batang": BUNDLED_FONT_DIR / "GowunBatang-Regular.ttf",
+    "song_myung": BUNDLED_FONT_DIR / "SongMyung-Regular.ttf",
+    "poor_story": BUNDLED_FONT_DIR / "PoorStory-Regular.ttf",
+    "gaegu": BUNDLED_FONT_DIR / "Gaegu-Regular.ttf",
+    "single_day": BUNDLED_FONT_DIR / "SingleDay-Regular.ttf",
+    "montserrat": BUNDLED_FONT_DIR / "Montserrat.ttf",
+    "oswald": BUNDLED_FONT_DIR / "Oswald.ttf",
+    "playfair": BUNDLED_FONT_DIR / "PlayfairDisplay.ttf",
+}
+HANGUL_VIDEO_FONT_KEYS = {
+    "malgun",
+    "noto_sans_kr",
+    "noto_serif_kr",
+    "nanum_gothic",
+    "nanum_pen",
+    "han_dotum",
+    "han_batang",
+    "batang",
+    "georgia",
+    "black_han_sans",
+    "do_hyeon",
+    "jua",
+    "gowun_dodum",
+    "gowun_batang",
+    "song_myung",
+    "poor_story",
+    "gaegu",
+    "single_day",
+    "windows_malgun",
+    "windows_gulim",
+    "windows_dotum",
+    "windows_batang",
+    "windows_gungsuh",
+}
+
 
 def _video_font_path(font_family: str = "malgun") -> Path | None:
     configured = os.getenv("VIDEO_FONT_PATH")
+    windows_system_fonts = {
+        "windows_malgun": Path(r"C:\Windows\Fonts\malgun.ttf"),
+        "windows_gulim": Path(r"C:\Windows\Fonts\gulim.ttc"),
+        "windows_dotum": Path(r"C:\Windows\Fonts\gulim.ttc"),
+        "windows_batang": Path(r"C:\Windows\Fonts\batang.ttc"),
+        "windows_gungsuh": Path(r"C:\Windows\Fonts\batang.ttc"),
+        "windows_arial": Path(r"C:\Windows\Fonts\arial.ttf"),
+        "windows_georgia": Path(r"C:\Windows\Fonts\georgia.ttf"),
+        "windows_impact": Path(r"C:\Windows\Fonts\impact.ttf"),
+        "windows_consolas": Path(r"C:\Windows\Fonts\consola.ttf"),
+    }
     windows_fonts = {
         "malgun": Path(r"C:\Windows\Fonts\malgun.ttf"),
         "noto_sans_kr": Path(r"C:\Windows\Fonts\NotoSansKR-Regular.ttf"),
@@ -72,6 +140,8 @@ def _video_font_path(font_family: str = "malgun") -> Path | None:
     }
     candidates = [
         Path(configured) if configured else None,
+        windows_system_fonts.get(font_family),
+        BUNDLED_VIDEO_FONTS.get(font_family),
         windows_fonts.get(font_family),
         Path(r"C:\Windows\Fonts\malgun.ttf"),
         Path(r"C:\Windows\Fonts\arial.ttf"),
@@ -93,6 +163,7 @@ def _korean_video_font_path() -> Path | None:
     configured = os.getenv("VIDEO_KOREAN_FONT_PATH")
     candidates = [
         Path(configured) if configured else None,
+        BUNDLED_VIDEO_FONTS["noto_sans_kr"],
         Path(r"C:\Windows\Fonts\malgun.ttf"),
         Path(r"C:\Windows\Fonts\malgunbd.ttf"),
         Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
@@ -102,7 +173,7 @@ def _korean_video_font_path() -> Path | None:
 
 
 def _video_text_font_path(font_family: str, value: str) -> Path | None:
-    if _contains_hangul(value):
+    if _contains_hangul(value) and font_family not in HANGUL_VIDEO_FONT_KEYS:
         korean_font = _korean_video_font_path()
         if korean_font:
             return korean_font
@@ -215,11 +286,26 @@ def rasterize_svg_icon(source: Path, destination: Path, size: int) -> Path:
     return destination
 
 
-def _load_video_font(font_family: str, size: int) -> ImageFont.FreeTypeFont:
+def _load_video_font(
+    font_family: str, size: int, weight: int = 400
+) -> ImageFont.FreeTypeFont:
     font_path = _video_font_path(font_family)
     if not font_path:
         raise RuntimeError(f"Video font was not found: {font_family}")
-    return ImageFont.truetype(str(font_path), size=size)
+    font = ImageFont.truetype(str(font_path), size=size)
+    try:
+        axes = font.get_variation_axes()
+        if axes:
+            values = [
+                max(axis["minimum"], min(axis["maximum"], weight))
+                if axis.get("name") == b"Weight"
+                else axis["default"]
+                for axis in axes
+            ]
+            font.set_variation_by_axes(values)
+    except (AttributeError, OSError, KeyError, TypeError):
+        pass
+    return font
 
 
 def _text_width(
@@ -317,6 +403,7 @@ def render_static_video_frame(
         title_font = _load_video_font(
             str(compose.get("font_family") or "malgun"),
             title_size,
+            700,
         )
         title_spacing = title_size * 0.12
         title_x = width * _percent_position(compose.get("title_x"), 18) / 100
@@ -632,22 +719,34 @@ def _render_static_video_frame_browser(
     diagnostic_html_path.unlink(missing_ok=True)
 
     font_families = {
-        "malgun": '"Malgun Gothic", "Noto Sans KR", sans-serif',
-        "noto_sans_kr": '"Noto Sans KR", "Malgun Gothic", sans-serif',
-        "noto_serif_kr": '"Noto Serif KR", "Batang", serif',
-        "nanum_gothic": '"NanumGothic", "Malgun Gothic", sans-serif',
-        "nanum_pen": '"Nanum Pen Script", "NanumPen", "Malgun Gothic", cursive',
-        "han_dotum": '"Hancom Dotum", "HANDotum", "Malgun Gothic", sans-serif',
-        "han_batang": '"Hancom Batang", "HANBatang", "Batang", serif',
-        "batang": '"Batang", "Noto Serif KR", serif',
-        "arial": 'Arial, "Malgun Gothic", "Noto Sans KR", sans-serif',
-        "roboto": 'Roboto, "Noto Sans KR", "Malgun Gothic", sans-serif',
-        "bebas": '"Bebas Neue", "Noto Sans KR", "Malgun Gothic", sans-serif',
-        "anton": 'Anton, "Noto Sans KR", "Malgun Gothic", sans-serif',
-        "cinzel": 'Cinzel, "Noto Serif KR", "Batang", serif',
-        "georgia": 'Georgia, "Malgun Gothic", "Noto Sans KR", serif',
-        "impact": 'Impact, "Malgun Gothic", "Noto Sans KR", sans-serif',
-        "consolas": 'Consolas, "Malgun Gothic", "Noto Sans KR", monospace',
+        "malgun": '"Bundled Noto Sans KR", "Malgun Gothic", sans-serif',
+        "noto_sans_kr": '"Bundled Noto Sans KR", "Malgun Gothic", sans-serif',
+        "noto_serif_kr": '"Bundled Noto Serif KR", "Batang", serif',
+        "nanum_gothic": '"Bundled Nanum Gothic", "Malgun Gothic", sans-serif',
+        "nanum_pen": '"Bundled Nanum Pen Script", "Malgun Gothic", cursive',
+        "han_dotum": '"Bundled Noto Sans KR", "Malgun Gothic", sans-serif',
+        "han_batang": '"Bundled Noto Serif KR", "Batang", serif',
+        "batang": '"Bundled Noto Serif KR", "Batang", serif',
+        "arial": '"Bundled Roboto", Arial, "Malgun Gothic", sans-serif',
+        "roboto": '"Bundled Roboto", "Noto Sans KR", "Malgun Gothic", sans-serif',
+        "bebas": '"Bundled Bebas Neue", "Noto Sans KR", "Malgun Gothic", sans-serif',
+        "anton": '"Bundled Anton", "Noto Sans KR", "Malgun Gothic", sans-serif',
+        "cinzel": '"Bundled Cinzel", "Noto Serif KR", "Batang", serif',
+        "georgia": '"Bundled Noto Serif KR", Georgia, "Malgun Gothic", serif',
+        "impact": '"Bundled Anton", Impact, "Malgun Gothic", sans-serif',
+        "consolas": '"Bundled Roboto", Consolas, "Noto Sans KR", monospace',
+        "black_han_sans": '"Bundled Black Han Sans", "Bundled Noto Sans KR", sans-serif',
+        "do_hyeon": '"Bundled Do Hyeon", "Bundled Noto Sans KR", sans-serif',
+        "jua": '"Bundled Jua", "Bundled Noto Sans KR", sans-serif',
+        "gowun_dodum": '"Bundled Gowun Dodum", "Bundled Noto Sans KR", sans-serif',
+        "gowun_batang": '"Bundled Gowun Batang", "Bundled Noto Serif KR", serif',
+        "song_myung": '"Bundled Song Myung", "Bundled Noto Serif KR", serif',
+        "poor_story": '"Bundled Poor Story", "Bundled Noto Sans KR", cursive',
+        "gaegu": '"Bundled Gaegu", "Bundled Noto Sans KR", cursive',
+        "single_day": '"Bundled Single Day", "Bundled Noto Sans KR", cursive',
+        "montserrat": '"Bundled Montserrat", "Bundled Noto Sans KR", sans-serif',
+        "oswald": '"Bundled Oswald", "Bundled Noto Sans KR", sans-serif',
+        "playfair": '"Bundled Playfair Display", "Bundled Noto Serif KR", serif',
     }
 
     def percent(name: str, default: float) -> float:
@@ -1243,6 +1342,14 @@ SUNO LYRICS FIELD RULES
 - Do not place production notes, explanations, translations, or style keywords inside lyric lines.
 
 IMAGE PROMPT RULES
+- Write visual_concept in cinematic English as the album-wide visual identity.
+- Write thumbnail_image_prompt in cinematic English for a YouTube playlist
+  thumbnail background that matches the album, not a generic music image.
+- The thumbnail prompt must include album-specific subject matter, setting,
+  lighting, color palette, emotional tone, and clear negative space for text.
+- The thumbnail prompt must not request typography, logos, watermarks, UI,
+  album covers, microphones, headphones, or generic music-note imagery unless
+  explicitly requested by the user.
 - Write image_prompt in cinematic English for a 16:9 composition.
 - Describe subject, setting, lighting, palette, camera framing, and atmosphere.
 - Do not request typography, logos, watermarks, or text in the image.
@@ -1251,6 +1358,8 @@ JSON schema:
 {
   "album_summary": "album concept in the requested language",
   "common_style_prompt": "comma-separated English Suno style tags",
+  "visual_concept": "album-wide cinematic visual identity in English",
+  "thumbnail_image_prompt": "album-specific cinematic 16:9 YouTube thumbnail background prompt in English",
   "tracks": [{
     "sequence": 1,
     "title": "title in the requested language",
@@ -1391,6 +1500,10 @@ def run_album_plan(job_id: str, album_id: str) -> None:
                     plan.get("album_summary") or album.get("description") or ""
                 ),
                 "style_prompt": str(plan.get("common_style_prompt") or ""),
+                "visual_concept": str(plan.get("visual_concept") or ""),
+                "thumbnail_image_prompt": str(
+                    plan.get("thumbnail_image_prompt") or ""
+                ),
                 "status": "lyrics_ready",
                 "updated_at": db.now_iso(),
             },
@@ -1811,6 +1924,60 @@ def create_asset(
     )
 
 
+def _compact_prompt_value(value: Any, limit: int = 500) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
+
+
+def _album_thumbnail_prompt(album: dict[str, Any], tracks: list[dict[str, Any]]) -> str:
+    track_titles = ", ".join(
+        _compact_prompt_value(track.get("title"), 80)
+        for track in tracks[:8]
+        if track.get("title")
+    )
+    track_concepts = "; ".join(
+        _compact_prompt_value(track.get("concept"), 160)
+        for track in tracks[:5]
+        if track.get("concept")
+    )
+    planned_prompt = _compact_prompt_value(
+        album.get("thumbnail_image_prompt"), 1200
+    )
+    visual_concept = _compact_prompt_value(album.get("visual_concept"), 700)
+    album_context = {
+        "album_title": album.get("title"),
+        "artist_name": album.get("artist_name"),
+        "description": album.get("description"),
+        "genre": album.get("genre"),
+        "mood": album.get("mood"),
+        "keywords": album.get("keywords"),
+        "style_prompt": album.get("style_prompt"),
+        "visual_concept": visual_concept,
+        "track_titles": track_titles,
+        "track_concepts": track_concepts,
+    }
+    context_lines = [
+        f"{key}: {_compact_prompt_value(value)}"
+        for key, value in album_context.items()
+        if _compact_prompt_value(value)
+    ]
+    base = planned_prompt or (
+        "Create an album-specific cinematic YouTube music playlist thumbnail "
+        "background based on the album context below. The scene must clearly "
+        "match the album's story, mood, genre, and recurring imagery."
+    )
+    return "\n".join(
+        [
+            base,
+            "Format: 16:9 landscape thumbnail background.",
+            "Composition: strong single focal scene, clean negative space for headline text, readable at small size.",
+            "Visual constraints: no words, no letters, no logos, no watermark, no UI, no album-cover mockup.",
+            "Avoid generic microphones, headphones, music notes, stage lights, or random stock-photo symbolism unless the album context explicitly asks for them.",
+            "Album context:",
+            *context_lines,
+        ]
+    )
+
+
 def run_image_generation(
     job_id: str,
     album_id: str,
@@ -1826,18 +1993,17 @@ def run_image_generation(
         track = db.get_one("tracks", track_id) if track_id else None
         if not album:
             raise ValueError("Album not found")
+        album_tracks = db.fetch_all(
+            "SELECT title, concept, image_prompt FROM tracks WHERE album_id = ? ORDER BY sequence",
+            (album_id,),
+        )
         if asset_type == "template_preview":
             prompt = (
                 "16:9 visual design reference image for a music video template, "
                 f"{album['style_prompt'] or album['genre']}"
             )
         elif asset_type == "thumbnail_background":
-            prompt = (
-                "16:9 cinematic YouTube music playlist thumbnail background, "
-                "strong focal composition with clear negative space for headline text, "
-                "no words, no letters, no logos, "
-                f"{album['style_prompt'] or album['genre']}"
-            )
+            prompt = _album_thumbnail_prompt(album, album_tracks)
         else:
             prompt = (
                 (track or {}).get("image_prompt")

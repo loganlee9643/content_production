@@ -93,6 +93,8 @@ async def create_album(payload: schemas.AlbumCreate):
             "keywords": values["keywords"],
             "additional_instructions": values["additional_instructions"],
             "style_prompt": "",
+            "visual_concept": values.get("visual_concept", ""),
+            "thumbnail_image_prompt": values.get("thumbnail_image_prompt", ""),
             "track_count": values["track_count"],
             "status": "draft",
             "selected_cover_asset_id": None,
@@ -953,6 +955,48 @@ async def compose_image(
         raise HTTPException(status_code=409, detail="Asset belongs to another album")
     metadata = asset.get("metadata") or {}
     metadata["compose"] = dump(payload)
+    updated = db.update(
+        "assets",
+        asset_id,
+        {"metadata_json": db.encode_json(metadata)},
+    )
+    return data(updated)
+
+
+@router.post("/albums/{album_id}/images/{asset_id}/select-for-track")
+async def select_image_for_track(
+    album_id: str,
+    asset_id: str,
+    payload: schemas.ImageSelectionRequest,
+):
+    require("albums", album_id, "Album")
+    track = require("tracks", payload.track_id, "Track")
+    generation = require("generations", payload.generation_id, "Generation")
+    asset = require("assets", asset_id, "Asset")
+    if track["album_id"] != album_id:
+        raise HTTPException(status_code=409, detail="Track belongs to another album")
+    if generation["track_id"] != payload.track_id:
+        raise HTTPException(status_code=409, detail="Generation belongs to another track")
+    if asset["album_id"] != album_id:
+        raise HTTPException(status_code=409, detail="Asset belongs to another album")
+
+    covers = db.fetch_all(
+        "SELECT * FROM assets WHERE album_id = ? AND type = ?",
+        (album_id, "cover"),
+    )
+    for cover in covers:
+        metadata = cover.get("metadata") or {}
+        if (
+            metadata.get("selected_for_track_id") == payload.track_id
+            and metadata.get("selected_for_generation_id") == payload.generation_id
+        ):
+            metadata.pop("selected_for_track_id", None)
+            metadata.pop("selected_for_generation_id", None)
+            db.update("assets", cover["id"], {"metadata_json": db.encode_json(metadata)})
+
+    metadata = asset.get("metadata") or {}
+    metadata["selected_for_track_id"] = payload.track_id
+    metadata["selected_for_generation_id"] = payload.generation_id
     updated = db.update(
         "assets",
         asset_id,

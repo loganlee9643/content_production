@@ -18,6 +18,8 @@ class AlbumCreate(BaseModel):
     instruments: list[str] = Field(default_factory=list)
     keywords: str = ""
     additional_instructions: str = ""
+    visual_concept: str = ""
+    thumbnail_image_prompt: str = ""
     track_count: int = Field(default=10, ge=1, le=30)
 
 
@@ -33,6 +35,8 @@ class AlbumUpdate(BaseModel):
     instruments: list[str] | None = None
     keywords: str | None = None
     additional_instructions: str | None = None
+    visual_concept: str | None = None
+    thumbnail_image_prompt: str | None = None
     track_count: int | None = Field(default=None, ge=1, le=30)
 
 
@@ -132,6 +136,11 @@ class ImageComposeRequest(BaseModel):
     visualizer_width: float = Field(default=18, ge=5, le=80)
     visualizer_height: int = Field(default=90, ge=30, le=500)
     visualizer_style: Literal["bars", "wave", "dots"] = "bars"
+
+
+class ImageSelectionRequest(BaseModel):
+    track_id: str
+    generation_id: str
 
 
 class ThumbnailTextLayer(BaseModel):

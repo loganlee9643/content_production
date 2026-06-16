@@ -50,6 +50,8 @@ def init_db() -> None:
         keywords TEXT NOT NULL DEFAULT '',
         additional_instructions TEXT NOT NULL DEFAULT '',
         style_prompt TEXT NOT NULL DEFAULT '',
+        visual_concept TEXT NOT NULL DEFAULT '',
+        thumbnail_image_prompt TEXT NOT NULL DEFAULT '',
         track_count INTEGER NOT NULL DEFAULT 1,
         status TEXT NOT NULL DEFAULT 'draft',
         selected_cover_asset_id TEXT,
@@ -178,6 +180,20 @@ def init_db() -> None:
         if "preview_asset_id" not in template_columns:
             connection.execute(
                 "ALTER TABLE video_templates ADD COLUMN preview_asset_id TEXT"
+            )
+        album_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(albums)")
+        }
+        if "visual_concept" not in album_columns:
+            connection.execute(
+                "ALTER TABLE albums "
+                "ADD COLUMN visual_concept TEXT NOT NULL DEFAULT ''"
+            )
+        if "thumbnail_image_prompt" not in album_columns:
+            connection.execute(
+                "ALTER TABLE albums "
+                "ADD COLUMN thumbnail_image_prompt TEXT NOT NULL DEFAULT ''"
             )
         connection.commit()
 

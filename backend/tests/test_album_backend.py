@@ -60,6 +60,18 @@ class AlbumBackendTest(unittest.TestCase):
         self.assertEqual(result, korean_font)
         selected_font.assert_not_called()
 
+    def test_video_font_keeps_selected_hangul_capable_font(self) -> None:
+        selected_font = Path("frontend/public/fonts/NotoSerifKR.ttf")
+        with (
+            patch.object(services, "_korean_video_font_path") as korean_font,
+            patch.object(services, "_video_font_path", return_value=selected_font) as video_font,
+        ):
+            result = services._video_text_font_path("noto_serif_kr", "첫 빗방울")
+
+        self.assertEqual(result, selected_font)
+        korean_font.assert_not_called()
+        video_font.assert_called_once_with("noto_serif_kr")
+
     def test_video_font_keeps_selected_font_for_latin_text(self) -> None:
         arial_font = Path(r"C:\Windows\Fonts\arial.ttf")
         with (
@@ -129,6 +141,74 @@ class AlbumBackendTest(unittest.TestCase):
         services.set_job_succeeded(job["id"], {"ok": True})
         response = asyncio.run(router.get_job(job["id"]))
         self.assertTrue(response["data"]["result"]["ok"])
+
+    def test_image_selection_is_saved_per_track_generation(self) -> None:
+        album = self.create_album()
+        track = asyncio.run(
+            router.create_track(
+                album["id"],
+                schemas.TrackCreate(sequence=1, title="Rain Track"),
+            )
+        )["data"]
+        generation = db.insert(
+            "generations",
+            {
+                "id": db.new_id(),
+                "track_id": track["id"],
+                "job_id": services.create_job(
+                    "track_generate", "track", track["id"]
+                )["id"],
+                "request_id": None,
+                "clip_id": "clip-test",
+                "status": "complete",
+                "title": track["title"],
+                "audio_url": None,
+                "image_url": None,
+                "local_audio_path": "fake.mp3",
+                "generated_lyrics": None,
+                "tags": None,
+                "raw_response_json": "{}",
+                "is_selected": 1,
+                "created_at": db.now_iso(),
+                "completed_at": db.now_iso(),
+            },
+        )
+        first = services.save_uploaded_asset(
+            album["id"], b"first", "first.png", "image/png"
+        )
+        second = services.save_uploaded_asset(
+            album["id"], b"second", "second.png", "image/png"
+        )
+
+        asyncio.run(
+            router.select_image_for_track(
+                album["id"],
+                first["id"],
+                schemas.ImageSelectionRequest(
+                    track_id=track["id"],
+                    generation_id=generation["id"],
+                ),
+            )
+        )
+        updated = asyncio.run(
+            router.select_image_for_track(
+                album["id"],
+                second["id"],
+                schemas.ImageSelectionRequest(
+                    track_id=track["id"],
+                    generation_id=generation["id"],
+                ),
+            )
+        )["data"]
+
+        self.assertEqual(updated["metadata"]["selected_for_track_id"], track["id"])
+        self.assertEqual(
+            updated["metadata"]["selected_for_generation_id"], generation["id"]
+        )
+        self.assertNotIn(
+            "selected_for_generation_id",
+            db.get_one("assets", first["id"])["metadata"],
+        )
 
     def test_thumbnail_document_renders_png_with_text_layers(self) -> None:
         album = self.create_album()
@@ -203,6 +283,41 @@ class AlbumBackendTest(unittest.TestCase):
         prompt = gemini.call_args.args[1]
         self.assertIn(album["title"], prompt)
         self.assertIn("따뜻한 어쿠스틱 분위기", prompt)
+
+    def test_thumbnail_background_prompt_uses_album_plan_context(self) -> None:
+        album = self.create_album()
+        db.update(
+            "albums",
+            album["id"],
+            {
+                "style_prompt": "rainy city pop, warm analog synth",
+                "visual_concept": "two people under an old umbrella at night",
+                "thumbnail_image_prompt": (
+                    "Rainy Seoul street at night, old yellow umbrella, "
+                    "warm reflections, nostalgic romantic mood"
+                ),
+            },
+        )
+        track = asyncio.run(
+            router.create_track(
+                album["id"],
+                schemas.TrackCreate(
+                    sequence=1,
+                    title="Old Umbrella",
+                    concept="A quiet promise under rain",
+                ),
+            )
+        )["data"]
+
+        prompt = services._album_thumbnail_prompt(
+            db.get_one("albums", album["id"]), [track]
+        )
+
+        self.assertIn("old yellow umbrella", prompt)
+        self.assertIn("Old Umbrella", prompt)
+        self.assertIn("A quiet promise under rain", prompt)
+        self.assertIn("no words", prompt)
+        self.assertIn("negative space", prompt)
 
     def test_video_icon_folder_listing_and_path_validation(self) -> None:
         icon_dir = Path(self.temp_dir.name) / "icons"

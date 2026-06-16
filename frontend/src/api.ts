@@ -16,6 +16,8 @@ export interface Album {
   keywords: string;
   additional_instructions: string;
   style_prompt: string;
+  visual_concept: string;
+  thumbnail_image_prompt: string;
   track_count: number;
   status: string;
   selected_cover_asset_id: string | null;
@@ -484,6 +486,15 @@ export const api = {
     payload: Record<string, unknown>,
   ) =>
     request<Asset>(`/albums/${albumId}/images/${assetId}/compose`, {
+      method: "POST",
+      body: json(payload),
+    }),
+  selectImageForTrack: (
+    albumId: string,
+    assetId: string,
+    payload: { track_id: string; generation_id: string },
+  ) =>
+    request<Asset>(`/albums/${albumId}/images/${assetId}/select-for-track`, {
       method: "POST",
       body: json(payload),
     }),
