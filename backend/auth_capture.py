@@ -45,6 +45,44 @@ class SunoAuth:
         )
 
 
+def _page_device_id(page: Any) -> str:
+    try:
+        value = page.evaluate(
+            """() => {
+              const fromCookie = document.cookie.match(/(?:^|; )suno_device_id=([^;]*)/);
+              if (fromCookie && fromCookie[1]) return decodeURIComponent(fromCookie[1]);
+              try {
+                for (const key of ['suno_device_id', 'device-id', 'deviceId']) {
+                  const stored = window.localStorage.getItem(key)
+                    || window.sessionStorage.getItem(key);
+                  if (stored) return stored;
+                }
+              } catch (error) {}
+              return '';
+            }"""
+        )
+    except Exception:
+        return ""
+    return str(value or "").strip()
+
+
+def _auth_with_device_id(auth: SunoAuth, page: Any) -> SunoAuth:
+    from utils import device_id_from_cookie, persist_device_id
+
+    device = device_id_from_cookie(auth.cookie) or _page_device_id(page)
+    if not device:
+        return auth
+    persist_device_id(device)
+    cookie = auth.cookie
+    if "suno_device_id=" not in cookie:
+        cookie = f"{cookie}; suno_device_id={device}" if cookie else f"suno_device_id={device}"
+    return SunoAuth(
+        session_id=auth.session_id,
+        cookie=cookie,
+        captured_at=auth.captured_at,
+    )
+
+
 def _cookie_pairs(cookie_header: str) -> dict[str, str]:
     pairs: dict[str, str] = {}
     for part in cookie_header.split(";"):
@@ -292,7 +330,7 @@ def capture_auth_with_browser(
             last_wait_log = 0.0
             while time.monotonic() < deadline:
                 if captured_auth:
-                    latest_auth = captured_auth[0]
+                    latest_auth = _auth_with_device_id(captured_auth[0], page)
                 if page.is_closed():
                     if latest_auth is not None:
                         return latest_auth
@@ -304,10 +342,13 @@ def capture_auth_with_browser(
                     cookie_header = _cookie_header(cookies)
                     if cookie_header:
                         session_id = find_active_session(cookie_header)
-                        latest_auth = SunoAuth(
-                            session_id=session_id,
-                            cookie=cookie_header,
-                            captured_at=time.time(),
+                        latest_auth = _auth_with_device_id(
+                            SunoAuth(
+                                session_id=session_id,
+                                cookie=cookie_header,
+                                captured_at=time.time(),
+                            ),
+                            page,
                         )
                 except (
                     requests.RequestException,

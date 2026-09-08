@@ -249,6 +249,27 @@ function JobPanel({ job }: { job?: Job }) {
   );
 }
 
+function CandidateAudio({ src }: { src: string }) {
+  const [unplayable, setUnplayable] = useState(false);
+  if (unplayable) {
+    return <span className="audio-wait">재생 가능한 음원이 아직 없습니다.</span>;
+  }
+  return (
+    <audio
+      controls
+      preload="metadata"
+      src={src}
+      onError={() => setUnplayable(true)}
+      onLoadedMetadata={(event) => {
+        const duration = event.currentTarget.duration;
+        if (!Number.isFinite(duration) || duration <= 0) {
+          setUnplayable(true);
+        }
+      }}
+    />
+  );
+}
+
 function AppShell({ children }: { children: ReactNode }) {
   const { albumId } = useParams();
   const location = useLocation();
@@ -944,6 +965,14 @@ function GenerationPanel({
       queryClient.invalidateQueries({ queryKey: qk.tracks(track.album_id) });
     },
   });
+  const fetchAudio = useMutation({
+    mutationFn: (id: string) => api.fetchGenerationAudio(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: qk.generations(track.id) });
+      queryClient.invalidateQueries({ queryKey: qk.album(track.album_id) });
+      queryClient.invalidateQueries({ queryKey: qk.tracks(track.album_id) });
+    },
+  });
   const updateTitle = useMutation({
     mutationFn: ({ id, title }: { id: string; title: string }) => api.updateGeneration(id, title),
     onSuccess: (updated) => {
@@ -961,7 +990,16 @@ function GenerationPanel({
     }
   }, [job.data?.status]);
   const audioAsset = (generation: Generation) =>
-    album.assets?.find((asset) => asset.type === "audio" && asset.generation_id === generation.id);
+    album.assets?.find((asset) => (
+      asset.type === "audio"
+      && asset.generation_id === generation.id
+      && (
+        asset.content_type === "audio/mpeg"
+        || asset.content_type === "audio/wav"
+        || asset.original_name.toLowerCase().endsWith(".mp3")
+        || asset.original_name.toLowerCase().endsWith(".wav")
+      )
+    ));
 
   return (
     <article className={`generation-track ${open ? "open" : ""}`}>
@@ -976,7 +1014,7 @@ function GenerationPanel({
       {open && (
         <div className="generation-body">
           <JobPanel job={job.data} />
-          <ErrorNotice error={generate.error || generations.error || choose.error || updateTitle.error} />
+          <ErrorNotice error={generate.error || generations.error || choose.error || updateTitle.error || fetchAudio.error} />
           <div className="input-summary">
             <button className={detailTab === "lyrics" ? "active" : ""} onClick={() => onOpenDetail("lyrics")}><FileText size={16} /> 가사 {track.lyrics.length.toLocaleString()}자</button>
             <button className={detailTab === "style" ? "active" : ""} onClick={() => onOpenDetail("style")}><Sparkles size={16} /> 스타일 {track.style_prompt.length.toLocaleString()}자</button>
@@ -988,7 +1026,7 @@ function GenerationPanel({
               <div className="candidate-grid">
                 {generations.data.map((candidate) => {
                   const local = audioAsset(candidate);
-                  const source = local ? assetUrl(local.id) : candidate.audio_url || "";
+                  const source = local ? assetUrl(local.id) : "";
                   const titleDraft = titleDrafts[candidate.id] ?? candidate.title;
                   const titleChanged = titleDraft.trim() !== candidate.title;
                   return (
@@ -1049,9 +1087,33 @@ function GenerationPanel({
                         </div>
                       )}
                       <p>{candidate.tags || track.style_prompt}</p>
-                      {source ? <audio controls preload="none" src={source} /> : <span className="audio-wait">오디오 준비 중</span>}
+                      {source ? <CandidateAudio key={source} src={source} /> : (
+                        <div className="audio-wait-row">
+                          <span className="audio-wait">
+                            {candidate.status === "complete"
+                              ? "재생 가능한 음원이 아직 없습니다."
+                              : "오디오 준비 중"}
+                          </span>
+                          {candidate.status === "complete" && (
+                            <Button
+                              variant="secondary"
+                              loading={fetchAudio.isPending && fetchAudio.variables === candidate.id}
+                              disabled={fetchAudio.isPending && fetchAudio.variables !== candidate.id}
+                              icon={<Download size={16} />}
+                              onClick={() => fetchAudio.mutate(candidate.id)}
+                            >
+                              음원 받기
+                            </Button>
+                          )}
+                        </div>
+                      )}
                       <div className="candidate-actions">
-                        {source && <a href={source} download className="button ghost"><Download size={16} /> MP3</a>}
+                        {source && (
+                          <a href={source} download className="button ghost">
+                            <Download size={16} />
+                            {local?.original_name.toLowerCase().endsWith(".wav") ? "WAV" : "MP3"}
+                          </a>
+                        )}
                         <Button
                           variant={candidate.is_selected ? "secondary" : "primary"}
                           loading={choose.isPending && choose.variables === candidate.id}

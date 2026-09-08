@@ -32,10 +32,15 @@ from auth_capture import (
 )
 from cookie import suno_auth, update_token
 from utils import (
+    SUNO_USER_AGENT,
     SunoAPIError,
     SunoGenerationVerificationError,
     generate_music,
     get_feed,
+    get_wav_file,
+    request_wav_convert,
+    wav_file_url,
+    web_client_headers,
 )
 
 
@@ -1764,11 +1769,365 @@ def _submitted_clips(payload: Any) -> tuple[str | None, list[dict[str, Any]]]:
     return payload.get("id"), [item for item in clips if isinstance(item, dict)]
 
 
+SUNO_CLIP_READY_STATUSES = {
+    "complete",
+    "completed",
+    "complete_success",
+    "success",
+}
+AUDIO_DOWNLOAD_RETRIES = 3
+AUDIO_DOWNLOAD_RETRY_SECONDS = 2
+WAV_CONVERT_TIMEOUT_SECONDS = 180
+WAV_CONVERT_POLL_SECONDS = 2
+SUNO_PLACEHOLDER_AUDIO_PATHS = {"/api/forbidden"}
+SUNO_MEDIA_HOSTS = {
+    "cdn1.suno.ai",
+    "cdn2.suno.ai",
+    "suno.ai",
+    "suno.com",
+    "suno-data-uploads.s3.amazonaws.com",
+}
+SUNO_MEDIA_HOST_SUFFIXES = (".suno.ai", ".suno.com", ".cloudfront.net")
+
+
+def _suno_is_placeholder_url(url: str) -> bool:
+    """Suno now puts /api/forbidden in audio_url when the MP3 is locked."""
+    if not url.strip():
+        return True
+    path = urllib.parse.urlparse(url).path.rstrip("/") or "/"
+    return path in SUNO_PLACEHOLDER_AUDIO_PATHS
+
+
+def _audio_suffix(url: str, content_type: str | None) -> str:
+    ctype = str(content_type or "").lower()
+    if "wav" in ctype:
+        return "wav"
+    if "mp3" in ctype or "mpeg" in ctype:
+        return "mp3"
+    if any(token in ctype for token in ("m4a", "mp4", "aac", "opus")):
+        return "m4a"
+    path = urllib.parse.urlparse(url).path.lower()
+    if path.endswith(".wav"):
+        return "wav"
+    if path.endswith(".mp3"):
+        return "mp3"
+    if path.endswith((".m4a", ".mp4", ".aac")):
+        return "m4a"
+    return "mp3"
+
+
+def _audio_content_type(url: str, content_type: str | None) -> str:
+    suffix = _audio_suffix(url, content_type)
+    if suffix == "m4a":
+        return "audio/mp4"
+    if suffix == "wav":
+        return "audio/wav"
+    return "audio/mpeg"
+
+
+def _suno_is_browser_audio(content_type: str | None, url: str) -> bool:
+    """m4a-opus from CloudFront is an encrypted player stream, not HTML audio."""
+    ctype = str(content_type or "").lower()
+    if "opus" in ctype:
+        return False
+    if any(token in ctype for token in ("mp3", "mpeg", "wav", "aac")):
+        return True
+    path = urllib.parse.urlparse(url).path.lower()
+    return path.endswith((".mp3", ".wav", ".aac"))
+
+
+def _looks_like_audio(data: bytes) -> bool:
+    if len(data) < 64:
+        return False
+    if data.startswith((b"ID3", b"OggS", b"RIFF", b"fLaC")):
+        return True
+    if data[4:8] == b"ftyp":
+        return True
+    return data[:2] in {b"\xff\xfb", b"\xff\xfa", b"\xff\xf3", b"\xff\xf2"}
+
+
+def _suno_audio_source(item: dict[str, Any] | None) -> tuple[str, str, str]:
+    """Prefer a browser-playable MP3. Skip locked /api/forbidden and encrypted opus."""
+    if not isinstance(item, dict):
+        return "", "audio/mpeg", "mp3"
+    entries = [
+        entry
+        for entry in (item.get("media_urls") or [])
+        if isinstance(entry, dict) and str(entry.get("url") or "").strip()
+    ]
+    playable = [
+        entry
+        for entry in entries
+        if _suno_is_browser_audio(str(entry.get("content_type") or ""), str(entry.get("url")))
+    ]
+    preferred = next(
+        (
+            entry
+            for entry in playable
+            if "mp3" in str(entry.get("content_type") or "").lower()
+            or "mpeg" in str(entry.get("content_type") or "").lower()
+        ),
+        playable[0] if playable else None,
+    )
+    if preferred is not None:
+        url = str(preferred["url"]).strip()
+        declared = preferred.get("content_type")
+        return url, _audio_content_type(url, declared), _audio_suffix(url, declared)
+    audio_url = str(item.get("audio_url") or "").strip()
+    if (
+        audio_url
+        and not _suno_is_placeholder_url(audio_url)
+        and _suno_is_browser_audio(None, audio_url)
+    ):
+        return audio_url, _audio_content_type(audio_url, None), _audio_suffix(audio_url, None)
+    return "", "audio/mpeg", "mp3"
+
+
+def _suno_clip_ready(status: str, audio: dict[str, Any] | str = "") -> bool:
+    """Suno finished the clip. A playable MP3 may still be locked separately."""
+    return status.strip().lower() in SUNO_CLIP_READY_STATUSES
+
+
+def _suno_cdn_mp3_url(clip_id: str) -> str:
+    """Web MP3 download path. Used as a fetch candidate, not a playable claim."""
+    return f"https://cdn1.suno.ai/{clip_id}.mp3"
+
+
+def _is_suno_s3_host(host: str) -> bool:
+    """Suno WAV renders now land on suno-data-uploads S3, including regional buckets."""
+    return host.startswith("suno-") and ".s3." in host and host.endswith(".amazonaws.com")
+
+
+def _suno_media_url(url: str) -> str:
+    """Accept the web download URL. Unknown/placeholder values are treated as not ready."""
+    url = url.strip()
+    if not url or _suno_is_placeholder_url(url):
+        return ""
+    if url.startswith("//"):
+        url = f"https:{url}"
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not host:
+        logger.info("Suno media URL not ready host=%s path=%s", host, parsed.path)
+        return ""
+    if (
+        host in SUNO_MEDIA_HOSTS
+        or any(host.endswith(suffix) for suffix in SUNO_MEDIA_HOST_SUFFIXES)
+        or _is_suno_s3_host(host)
+    ):
+        return url
+    logger.warning("Suno media URL host not allowed host=%s path=%s", host, parsed.path)
+    return ""
+
+
+def _generation_audio_source(generation: dict[str, Any]) -> tuple[str, str, str]:
+    url, content_type, suffix = _suno_audio_source(
+        generation.get("raw_response")
+        if isinstance(generation.get("raw_response"), dict)
+        else None
+    )
+    stored = str(generation.get("audio_url") or "").strip()
+    if url:
+        return url, content_type, suffix
+    if (
+        stored
+        and not _suno_is_placeholder_url(stored)
+        and _suno_is_browser_audio(None, stored)
+    ):
+        return stored, _audio_content_type(stored, None), _audio_suffix(stored, None)
+    clip_id = str(generation.get("clip_id") or "").strip()
+    if clip_id:
+        return _suno_cdn_mp3_url(clip_id), "audio/mpeg", "mp3"
+    return "", "audio/mpeg", "mp3"
+
+
 def _download(url: str, destination: Path) -> None:
+    """Fetch a Suno CDN object with the same browser headers the web player uses."""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(request, timeout=300) as response:
-        destination.write_bytes(response.read())
+    host = (urllib.parse.urlparse(url).hostname or "").lower()
+    headers = {
+        "User-Agent": SUNO_USER_AGENT,
+        "Accept": "*/*",
+    }
+    cookie = ""
+    # S3 signed URLs reject extra Cookie/Authorization headers.
+    if not _is_suno_s3_host(host):
+        headers["Referer"] = "https://suno.com/"
+        headers["Origin"] = "https://suno.com"
+        cookie = suno_auth.get_cookie()
+        if cookie:
+            headers["Cookie"] = cookie
+        token = suno_auth.get_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        headers.update(web_client_headers(cookie))
+    last_error: Exception | None = None
+    for attempt in range(1, AUDIO_DOWNLOAD_RETRIES + 1):
+        request = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                payload = response.read()
+            if not _looks_like_audio(payload):
+                raise ValueError(
+                    "Suno returned a non-playable audio stream instead of MP3"
+                )
+            destination.write_bytes(payload)
+            return
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in {403, 404, 425, 429} or attempt == AUDIO_DOWNLOAD_RETRIES:
+                raise
+            logger.warning(
+                "Suno audio download retry attempt=%s status=%s host=%s",
+                attempt,
+                exc.code,
+                urllib.parse.urlparse(url).netloc,
+            )
+            time.sleep(AUDIO_DOWNLOAD_RETRY_SECONDS * attempt)
+    if last_error:
+        raise last_error
+
+
+async def _suno_wav_download_url(clip_id: str, token: str) -> str:
+    """Same path as suno.com Download .wav: convert, then poll wav_file_url."""
+    cookie = suno_auth.get_cookie()
+    existing = _suno_media_url(wav_file_url(await get_wav_file(clip_id, token, cookie)))
+    if existing:
+        return existing
+    try:
+        await request_wav_convert(clip_id, token, cookie)
+    except SunoAPIError as exc:
+        logger.error(
+            "Suno WAV convert failed clip_id=%s status=%s error_type=%s body=%r",
+            clip_id,
+            exc.status_code,
+            exc.error_type,
+            exc.body[:1000],
+        )
+        if exc.status_code not in {409, 425}:
+            raise
+        logger.info(
+            "Suno WAV convert already in progress clip_id=%s status=%s",
+            clip_id,
+            exc.status_code,
+        )
+    deadline = time.monotonic() + WAV_CONVERT_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        payload = await get_wav_file(clip_id, token, cookie)
+        url = _suno_media_url(wav_file_url(payload))
+        if url:
+            return url
+        await asyncio.sleep(WAV_CONVERT_POLL_SECONDS)
+    raise TimeoutError(f"Suno WAV convert timed out for clip {clip_id}")
+
+
+async def store_generation_audio(
+    generation_id: str,
+    token: str | None = None,
+) -> dict[str, Any]:
+    """Save a local playable file. MP3 first, then the web WAV convert path."""
+    generation = db.get_one("generations", generation_id)
+    if not generation:
+        raise ValueError("Generation not found")
+    local = str(generation.get("local_audio_path") or "").strip()
+    if local and (db.STORAGE_DIR / local).is_file():
+        return generation
+    track = db.get_one("tracks", generation["track_id"])
+    if not track:
+        raise ValueError("Track not found")
+    token = token or _suno_token()
+    clip_id = str(generation.get("clip_id") or "").strip()
+    candidates: list[tuple[str, str, str]] = []
+    audio_url, content_type, suffix = _generation_audio_source(generation)
+    if audio_url:
+        candidates.append((audio_url, content_type, suffix))
+    last_error: Exception | None = None
+    for audio_url, content_type, suffix in candidates:
+        relative = (
+            Path("albums")
+            / track["album_id"]
+            / "tracks"
+            / track["id"]
+            / f"{generation_id}.{suffix}"
+        )
+        destination = db.STORAGE_DIR / relative
+        try:
+            await asyncio.to_thread(_download, audio_url, destination)
+        except (urllib.error.HTTPError, ValueError) as exc:
+            last_error = exc
+            logger.warning(
+                "Suno playable audio unavailable clip_id=%s host=%s error=%s",
+                clip_id,
+                urllib.parse.urlparse(audio_url).netloc,
+                exc,
+            )
+            continue
+        return _record_generation_audio(
+            generation_id,
+            track,
+            audio_url,
+            destination,
+            relative,
+            content_type,
+            suffix,
+        )
+    if not clip_id:
+        if last_error:
+            raise last_error
+        raise ValueError("Suno clip id is missing")
+    wav_url = await _suno_wav_download_url(clip_id, token)
+    suffix = "wav"
+    content_type = "audio/wav"
+    relative = (
+        Path("albums")
+        / track["album_id"]
+        / "tracks"
+        / track["id"]
+        / f"{generation_id}.{suffix}"
+    )
+    destination = db.STORAGE_DIR / relative
+    await asyncio.to_thread(_download, wav_url, destination)
+    return _record_generation_audio(
+        generation_id,
+        track,
+        wav_url,
+        destination,
+        relative,
+        content_type,
+        suffix,
+    )
+
+
+def _record_generation_audio(
+    generation_id: str,
+    track: dict[str, Any],
+    audio_url: str,
+    destination: Path,
+    relative: Path,
+    content_type: str,
+    suffix: str,
+) -> dict[str, Any]:
+    db.update(
+        "generations",
+        generation_id,
+        {
+            "audio_url": audio_url,
+            "local_audio_path": str(relative).replace("\\", "/"),
+        },
+    )
+    create_asset(
+        album_id=track["album_id"],
+        track_id=track["id"],
+        generation_id=generation_id,
+        asset_type="audio",
+        path=destination,
+        original_name=f"{track['title']}.{suffix}",
+        content_type=content_type,
+    )
+    updated = db.get_one("generations", generation_id)
+    if not updated:
+        raise ValueError("Generation not found")
+    return updated
 
 
 async def run_track_generation(
@@ -1840,7 +2199,7 @@ async def run_track_generation(
                     "clip_id": clip_id,
                     "status": str(clip.get("status") or "submitted"),
                     "title": str(clip.get("title") or track["title"]),
-                    "audio_url": clip.get("audio_url"),
+                    "audio_url": _suno_audio_source(clip)[0] or None,
                     "image_url": clip.get("image_url"),
                     "local_audio_path": None,
                     "generated_lyrics": None,
@@ -1865,7 +2224,11 @@ async def run_track_generation(
         deadline = time.monotonic() + timeout_seconds
         completed: set[str] = set()
         while time.monotonic() < deadline and len(completed) < len(generation_ids):
-            feed = await get_feed(",".join(generation_ids), token)
+            feed = await get_feed(
+                ",".join(generation_ids),
+                token,
+                cookie=suno_auth.get_cookie(),
+            )
             for item in _feed_items(feed):
                 clip_id = str(item.get("id") or "")
                 generation_id = generation_ids.get(clip_id)
@@ -1873,7 +2236,7 @@ async def run_track_generation(
                     continue
                 status = str(item.get("status") or "unknown")
                 metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-                audio_url = str(item.get("audio_url") or "")
+                audio_url, _, _ = _suno_audio_source(item)
                 values = {
                     "status": status,
                     "title": str(item.get("title") or track["title"]),
@@ -1886,7 +2249,7 @@ async def run_track_generation(
                 if status.lower() in {"error", "failed"}:
                     db.update("generations", generation_id, values)
                     raise RuntimeError(f"Suno generation failed for clip {clip_id}")
-                if audio_url:
+                if _suno_clip_ready(status, item):
                     values["completed_at"] = db.now_iso()
                     completed.add(clip_id)
                 db.update("generations", generation_id, values)
@@ -1899,34 +2262,20 @@ async def run_track_generation(
         if len(completed) < len(generation_ids):
             raise TimeoutError("Suno generation timed out")
         if download_audio:
-            album_id = track["album_id"]
             for clip_id, generation_id in generation_ids.items():
-                generation = db.get_one("generations", generation_id)
-                if not generation or not generation.get("audio_url"):
-                    continue
-                relative = (
-                    Path("albums")
-                    / album_id
-                    / "tracks"
-                    / track_id
-                    / f"{generation_id}.mp3"
-                )
-                destination = db.STORAGE_DIR / relative
-                await asyncio.to_thread(_download, generation["audio_url"], destination)
-                db.update(
-                    "generations",
-                    generation_id,
-                    {"local_audio_path": str(relative).replace("\\", "/")},
-                )
-                create_asset(
-                    album_id=album_id,
-                    track_id=track_id,
-                    generation_id=generation_id,
-                    asset_type="audio",
-                    path=destination,
-                    original_name=f"{track['title']}.mp3",
-                    content_type="audio/mpeg",
-                )
+                try:
+                    await store_generation_audio(generation_id, token)
+                except (
+                    SunoAPIError,
+                    TimeoutError,
+                    ValueError,
+                    urllib.error.HTTPError,
+                ) as exc:
+                    logger.warning(
+                        "Suno playable audio unavailable clip_id=%s error=%s",
+                        clip_id,
+                        exc,
+                    )
         db.update(
             "tracks",
             track_id,
@@ -2345,7 +2694,7 @@ def run_video_render(job_id: str, album_id: str, request: Any) -> None:
         if generation and generation["track_id"] != track["id"]:
             raise ValueError("Generation not found in track")
         if not generation or not generation.get("local_audio_path"):
-            raise ValueError("Select or download a generated audio candidate first")
+            raise ValueError("재생 가능한 음원이 아직 없습니다.")
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             raise RuntimeError("ffmpeg was not found on PATH")

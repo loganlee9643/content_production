@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import schemas
 from album_backend.db import init_db
 from album_backend.router import router as album_router
+from cookie import suno_auth
 from deps import get_token
 from utils import (
     SunoAPIError,
@@ -153,7 +154,7 @@ async def generate_with_song_description(
 @app.get("/feed/{aid}")
 async def fetch_feed(aid: str, token: str = Depends(get_token)):
     try:
-        resp = await get_feed(aid, token)
+        resp = await get_feed(aid, token, cookie=suno_auth.get_cookie())
         return resp
     except Exception as e:
         raise HTTPException(

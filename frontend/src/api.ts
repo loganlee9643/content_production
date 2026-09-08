@@ -276,6 +276,8 @@ export const api = {
       method: "PATCH",
       body: json({ title }),
     }),
+  fetchGenerationAudio: (generationId: string) =>
+    request<Generation>(`/generations/${generationId}/audio`, { method: "POST" }),
   getJob: (id: string) => request<Job>(`/jobs/${id}`),
   sunoStatus: () => request<SunoStatus>("/system/suno-status"),
   listVideoIcons: () => request<VideoIcon[]>("/system/video-icons"),

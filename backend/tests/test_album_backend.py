@@ -6,10 +6,11 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.error
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from PIL import Image
 
@@ -848,6 +849,320 @@ class AlbumBackendTest(unittest.TestCase):
         self.assertEqual(raw, image_bytes)
         self.assertEqual(mime, "image/png")
 
+    def test_suno_clip_ready_requires_complete_status(self) -> None:
+        url = "https://cdn1.suno.ai/clip.mp3"
+        self.assertFalse(services._suno_clip_ready("submitted", url))
+        self.assertFalse(services._suno_clip_ready("queued", url))
+        self.assertFalse(services._suno_clip_ready("streaming", url))
+        self.assertTrue(services._suno_clip_ready("complete", ""))
+        self.assertTrue(services._suno_clip_ready("complete_success", url))
+
+    def test_suno_audio_source_skips_encrypted_opus_and_uses_mp3(self) -> None:
+        mp3_url = "https://cdn1.suno.ai/example.mp3"
+        url, content_type, suffix = services._suno_audio_source(
+            {
+                "id": "example",
+                "audio_url": "https://studio-api.prod.suno.com/api/forbidden",
+                "media_urls": [
+                    {
+                        "url": "https://d2lwuy8qc234o3.cloudfront.net/1/clip/example.m4a",
+                        "content_type": "m4a-opus",
+                    },
+                    {"url": mp3_url, "content_type": "mp3"},
+                ],
+            }
+        )
+        self.assertEqual(url, mp3_url)
+        self.assertEqual(content_type, "audio/mpeg")
+        self.assertEqual(suffix, "mp3")
+
+    def test_browser_token_wraps_timestamp(self) -> None:
+        token = utils.browser_token(now_ms=1_700_000_000_000)
+        outer = json.loads(token)
+        inner = json.loads(base64.b64decode(outer["token"]))
+        self.assertEqual(inner["timestamp"], 1_700_000_000_000)
+
+    def test_device_id_prefers_suno_device_id_cookie(self) -> None:
+        path = Path(self.temp_dir.name) / "suno-device-id"
+        with (
+            patch.object(utils, "DEVICE_ID_FILE", path),
+            patch.dict(os.environ, {"SUNO_DEVICE_ID": ""}, clear=False),
+        ):
+            os.environ.pop("SUNO_DEVICE_ID", None)
+            value = utils.device_id("__client=abc; suno_device_id=web-device")
+        self.assertEqual(value, "web-device")
+        self.assertEqual(path.read_text(encoding="utf-8").strip(), "web-device")
+
+    def test_device_id_persists_across_reads(self) -> None:
+        path = Path(self.temp_dir.name) / "suno-device-id"
+        with (
+            patch.object(utils, "DEVICE_ID_FILE", path),
+            patch.dict(os.environ, {"SUNO_DEVICE_ID": ""}, clear=False),
+        ):
+            os.environ.pop("SUNO_DEVICE_ID", None)
+            first = utils.device_id()
+            second = utils.device_id()
+        self.assertEqual(first, second)
+        self.assertEqual(path.read_text(encoding="utf-8").strip(), first)
+
+    def test_get_feed_sends_web_client_headers(self) -> None:
+        with (
+            patch.object(utils, "device_id", return_value="device-uuid"),
+            patch.object(utils, "browser_token", return_value='{"token":"abc"}'),
+            patch.object(utils, "fetch", new=AsyncMock(return_value=[])) as fetch,
+        ):
+            asyncio.run(
+                utils.get_feed("clip-1", "jwt-token", cookie="__client=abc")
+            )
+
+        headers = fetch.await_args.args[1]
+        self.assertEqual(headers["Authorization"], "Bearer jwt-token")
+        self.assertEqual(headers["Cookie"], "__client=abc")
+        self.assertEqual(headers["device-id"], "device-uuid")
+        self.assertEqual(headers["browser-token"], '{"token":"abc"}')
+
+    def test_suno_audio_source_empty_when_only_locked_stream_exists(self) -> None:
+        url, content_type, suffix = services._suno_audio_source(
+            {
+                "id": "clip-locked",
+                "audio_url": "https://studio-api.prod.suno.com/api/forbidden",
+                "media_urls": [
+                    {
+                        "url": "https://d2lwuy8qc234o3.cloudfront.net/1/clip/clip-locked.m4a",
+                        "content_type": "m4a-opus",
+                    }
+                ],
+            }
+        )
+        self.assertEqual(url, "")
+        self.assertEqual(content_type, "audio/mpeg")
+        self.assertEqual(suffix, "mp3")
+        self.assertTrue(
+            services._suno_clip_ready(
+                "complete",
+                {
+                    "audio_url": "https://studio-api.prod.suno.com/api/forbidden",
+                    "media_urls": [
+                        {
+                            "url": "https://d2lwuy8qc234o3.cloudfront.net/1/clip/clip-locked.m4a",
+                            "content_type": "m4a-opus",
+                        }
+                    ],
+                },
+            )
+        )
+
+    def test_looks_like_audio_rejects_encrypted_stream(self) -> None:
+        self.assertTrue(services._looks_like_audio(b"ID3" + b"\x00" * 64))
+        self.assertTrue(services._looks_like_audio(b"\x00\x00\x00\x20ftyp" + b"\x00" * 64))
+        self.assertFalse(services._looks_like_audio(b"E\x1d\xbe\x0f" + b"\x00" * 64))
+
+    def test_download_uses_suno_browser_headers(self) -> None:
+        destination = db.STORAGE_DIR / "clip.mp3"
+        response = MagicMock()
+        response.read.return_value = b"ID3fake" + b"\x00" * 64
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        with (
+            patch.object(services.suno_auth, "get_cookie", return_value="__client=abc"),
+            patch.object(
+                services.urllib.request, "urlopen", return_value=response
+            ) as urlopen,
+        ):
+            services._download("https://cdn1.suno.ai/clip.mp3", destination)
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_header("User-agent"), services.SUNO_USER_AGENT)
+        self.assertEqual(request.get_header("Referer"), "https://suno.com/")
+        self.assertEqual(request.get_header("Origin"), "https://suno.com")
+        self.assertEqual(request.get_header("Cookie"), "__client=abc")
+        self.assertTrue(destination.read_bytes().startswith(b"ID3fake"))
+
+    def test_download_sends_device_id_and_browser_token(self) -> None:
+        destination = db.STORAGE_DIR / "clip-headers.mp3"
+        response = MagicMock()
+        response.read.return_value = b"ID3fake" + b"\x00" * 64
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        with (
+            patch.object(services.suno_auth, "get_cookie", return_value="__client=abc"),
+            patch.object(
+                services, "web_client_headers", return_value={"device-id": "dev", "browser-token": '{"token":"x"}'}
+            ),
+            patch.object(
+                services.urllib.request, "urlopen", return_value=response
+            ) as urlopen,
+        ):
+            services._download("https://cdn1.suno.ai/clip.mp3", destination)
+
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_header("Device-id"), "dev")
+        self.assertEqual(request.get_header("Browser-token"), '{"token":"x"}')
+
+    def test_generation_audio_source_falls_back_to_cdn_mp3(self) -> None:
+        url, content_type, suffix = services._generation_audio_source(
+            {
+                "clip_id": "clip-locked",
+                "audio_url": "https://studio-api.prod.suno.com/api/forbidden",
+                "raw_response": {
+                    "id": "clip-locked",
+                    "audio_url": "https://studio-api.prod.suno.com/api/forbidden",
+                    "media_urls": [
+                        {
+                            "url": "https://d2lwuy8qc234o3.cloudfront.net/1/clip/clip-locked.m4a",
+                            "content_type": "m4a-opus",
+                        }
+                    ],
+                },
+            }
+        )
+        self.assertEqual(url, "https://cdn1.suno.ai/clip-locked.mp3")
+        self.assertEqual(content_type, "audio/mpeg")
+        self.assertEqual(suffix, "mp3")
+
+    def test_suno_media_url_accepts_cloudfront_and_suno_hosts(self) -> None:
+        self.assertEqual(
+            services._suno_media_url("https://cdn1.suno.ai/clip.wav"),
+            "https://cdn1.suno.ai/clip.wav",
+        )
+        self.assertEqual(
+            services._suno_media_url(
+                "https://d2lwuy8qc234o3.cloudfront.net/1/clip/clip.wav"
+            ),
+            "https://d2lwuy8qc234o3.cloudfront.net/1/clip/clip.wav",
+        )
+        self.assertEqual(
+            services._suno_media_url("https://audiopipe.suno.ai/clip.wav"),
+            "https://audiopipe.suno.ai/clip.wav",
+        )
+        self.assertEqual(
+            services._suno_media_url(
+                "https://suno-data-uploads.s3.amazonaws.com/studio/uploads/clip.wav"
+            ),
+            "https://suno-data-uploads.s3.amazonaws.com/studio/uploads/clip.wav",
+        )
+        self.assertEqual(
+            services._suno_media_url("https://studio-api.prod.suno.com/api/forbidden"),
+            "",
+        )
+        self.assertEqual(services._suno_media_url("https://example.com/clip.wav"), "")
+
+    def test_wav_file_url_reads_ready_and_pending(self) -> None:
+        self.assertEqual(
+            utils.wav_file_url({"wav_file_url": "https://cdn1.suno.ai/z.wav"}),
+            "https://cdn1.suno.ai/z.wav",
+        )
+        self.assertEqual(utils.wav_file_url({}), "")
+        self.assertEqual(utils.wav_file_url({"wav_file_url": ""}), "")
+        self.assertEqual(utils.wav_file_url(None), "")
+        self.assertEqual(
+            utils.wav_file_url({"wav_file_url": {"url": "https://cdn1.suno.ai/z.wav"}}),
+            "https://cdn1.suno.ai/z.wav",
+        )
+
+    def test_request_wav_convert_posts_web_download_path(self) -> None:
+        path = Path(self.temp_dir.name) / "suno-device-id"
+        with (
+            patch.object(utils, "DEVICE_ID_FILE", path),
+            patch.dict(os.environ, {"SUNO_DEVICE_ID": ""}, clear=False),
+            patch.object(utils, "fetch", new=AsyncMock(return_value=None)) as fetch,
+        ):
+            os.environ.pop("SUNO_DEVICE_ID", None)
+            asyncio.run(
+                utils.request_wav_convert(
+                    "clip-1",
+                    "jwt-token",
+                    cookie="__client=abc; suno_device_id=web-device",
+                )
+            )
+        self.assertEqual(
+            fetch.await_args.args[0],
+            "https://studio-api.prod.suno.com/api/gen/clip-1/convert_wav/",
+        )
+        self.assertEqual(fetch.await_args.kwargs["method"], "POST")
+        headers = fetch.await_args.args[1]
+        self.assertEqual(headers["Cookie"], "__client=abc; suno_device_id=web-device")
+        self.assertEqual(headers["device-id"], "web-device")
+        self.assertIn("browser-token", headers)
+
+    def test_suno_wav_download_url_polls_until_ready(self) -> None:
+        with (
+            patch.object(services, "request_wav_convert", new=AsyncMock()),
+            patch.object(
+                services,
+                "get_wav_file",
+                new=AsyncMock(
+                    side_effect=[{}, {"wav_file_url": "https://cdn1.suno.ai/clip-1.wav"}]
+                ),
+            ),
+            patch.object(services.asyncio, "sleep", new=AsyncMock()),
+            patch.object(services.suno_auth, "get_cookie", return_value="__client=abc"),
+        ):
+            url = asyncio.run(services._suno_wav_download_url("clip-1", "jwt-token"))
+        self.assertEqual(url, "https://cdn1.suno.ai/clip-1.wav")
+
+    def test_store_generation_audio_falls_back_to_wav_after_mp3_forbidden(self) -> None:
+        album = self.create_album()
+        track = asyncio.run(
+            router.create_track(
+                album["id"],
+                schemas.TrackCreate(sequence=1, title="Rain Track"),
+            )
+        )["data"]
+        generation = db.insert(
+            "generations",
+            {
+                "id": db.new_id(),
+                "track_id": track["id"],
+                "job_id": services.create_job(
+                    "track_generate", "track", track["id"]
+                )["id"],
+                "request_id": None,
+                "clip_id": "clip-locked",
+                "status": "complete",
+                "title": track["title"],
+                "audio_url": "https://studio-api.prod.suno.com/api/forbidden",
+                "image_url": None,
+                "local_audio_path": None,
+                "generated_lyrics": None,
+                "tags": None,
+                "raw_response_json": db.encode_json(
+                    {
+                        "id": "clip-locked",
+                        "audio_url": "https://studio-api.prod.suno.com/api/forbidden",
+                        "media_urls": [
+                            {
+                                "url": "https://d2lwuy8qc234o3.cloudfront.net/1/clip/clip-locked.m4a",
+                                "content_type": "m4a-opus",
+                            }
+                        ],
+                    }
+                ),
+                "is_selected": 0,
+                "created_at": db.now_iso(),
+                "completed_at": db.now_iso(),
+            },
+        )
+
+        def fake_download(url: str, destination: Path) -> None:
+            if url.endswith(".mp3"):
+                raise urllib.error.HTTPError(url, 403, "Forbidden", hdrs=None, fp=None)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"RIFF" + b"\x00" * 64)
+
+        with (
+            patch.object(services, "_download", side_effect=fake_download),
+            patch.object(
+                services,
+                "_suno_wav_download_url",
+                new=AsyncMock(return_value="https://cdn1.suno.ai/clip-locked.wav"),
+            ),
+        ):
+            stored = asyncio.run(services.store_generation_audio(generation["id"], "jwt"))
+
+        self.assertTrue(str(stored["local_audio_path"]).endswith(".wav"))
+        self.assertEqual(stored["audio_url"], "https://cdn1.suno.ai/clip-locked.wav")
+
     def test_suno_generation_classifies_browser_verification_failure(self) -> None:
         first_error = services.SunoAPIError(
             422,
@@ -886,6 +1201,8 @@ class AlbumBackendTest(unittest.TestCase):
         )
         headers = fetch.await_args.args[1]
         self.assertEqual(headers["Cookie"], "__client=client-token")
+        self.assertNotIn("device-id", headers)
+        self.assertNotIn("browser-token", headers)
 
     def test_legacy_model_keeps_legacy_endpoint(self) -> None:
         with patch.object(utils, "fetch", new=AsyncMock(return_value={"clips": []})) as fetch:

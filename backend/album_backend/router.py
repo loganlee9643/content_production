@@ -457,6 +457,21 @@ async def update_generation(
     )
 
 
+@router.post("/generations/{generation_id}/audio")
+async def fetch_generation_audio(generation_id: str):
+    require("generations", generation_id, "Generation")
+    try:
+        return data(await services.store_generation_audio(generation_id))
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except (services.SunoAPIError, ValueError, OSError) as exc:
+        services.logger.warning("Suno audio fetch failed generation_id=%s error=%s", generation_id, exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Suno에서 재생 가능한 음원을 받지 못했습니다. {exc}",
+        ) from exc
+
+
 @router.get("/jobs/{job_id}")
 async def get_job(job_id: str):
     return data(require("jobs", job_id, "Job"))
@@ -1168,7 +1183,7 @@ async def create_archive(album_id: str):
                 if generation and generation.get("local_audio_path"):
                     audio = db.STORAGE_DIR / generation["local_audio_path"]
                     if audio.is_file():
-                        archive.write(audio, f"{prefix}.mp3")
+                        archive.write(audio, f"{prefix}{audio.suffix or '.mp3'}")
     asset = services.create_asset(
         album_id=album_id,
         track_id=None,

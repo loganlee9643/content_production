@@ -1,7 +1,10 @@
+import base64
 import json
 import logging
 import os
 import time
+import uuid
+from pathlib import Path
 
 import aiohttp
 from dotenv import load_dotenv
@@ -28,6 +31,7 @@ COMMON_HEADERS = {
     "Referer": "https://suno.com",
     "Origin": "https://suno.com",
 }
+DEVICE_ID_FILE = Path(__file__).resolve().parent / ".auth" / "suno-device-id"
 LEGACY_GENERATION_HEADERS = {
     "Content-Type": "text/plain;charset=UTF-8",
     "User-Agent": (
@@ -72,6 +76,7 @@ async def fetch(
     data=None,
     method="POST",
     merge_common_headers=True,
+    not_found_as_none=False,
 ):
     if headers is None:
         headers = {}
@@ -88,8 +93,13 @@ async def fetch(
             method=method, url=url, data=data, headers=request_headers
         ) as resp:
             body = await resp.text()
+            if resp.status == 404 and not_found_as_none:
+                return None
             if resp.status >= 400:
                 raise SunoAPIError(resp.status, method, url, body)
+            stripped = body.strip()
+            if not stripped or stripped == "null":
+                return None
             try:
                 return json.loads(body)
             except json.JSONDecodeError as exc:
@@ -98,8 +108,60 @@ async def fetch(
                 ) from exc
 
 
-async def get_feed(ids, token):
-    headers = _auth_headers(token)
+def browser_token(now_ms=None):
+    """Per-request Suno browser-token: JSON {token: btoa({timestamp: ms})}."""
+    timestamp_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    payload = json.dumps({"timestamp": timestamp_ms}, separators=(",", ":"))
+    encoded = base64.b64encode(payload.encode()).decode()
+    return json.dumps({"token": encoded}, separators=(",", ":"))
+
+
+def persist_device_id(value):
+    """Remember the browser suno_device_id. Empty input is ignored."""
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    DEVICE_ID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DEVICE_ID_FILE.write_text(value + "\n", encoding="utf-8")
+    return value
+
+
+def device_id_from_cookie(cookie):
+    return _cookie_value(cookie, "suno_device_id")
+
+
+def device_id(cookie=""):
+    """Prefer the browser suno_device_id cookie; otherwise reuse the saved UUID."""
+    configured = os.getenv("SUNO_DEVICE_ID", "").strip()
+    if configured:
+        return configured
+    from_cookie = device_id_from_cookie(cookie)
+    if from_cookie:
+        persist_device_id(from_cookie)
+        return from_cookie
+    try:
+        saved = DEVICE_ID_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        saved = ""
+    if saved:
+        return saved
+    return persist_device_id(str(uuid.uuid4()))
+
+
+def web_client_headers(cookie=""):
+    """Headers the suno.com SPA sends with studio-api and CDN requests."""
+    return {
+        "device-id": device_id(cookie),
+        "browser-token": browser_token(),
+    }
+
+
+async def get_feed(ids, token, cookie=None):
+    cookie = cookie if cookie is not None else os.getenv("COOKIE", "")
+    headers = {
+        **_auth_headers(token, cookie=cookie),
+        **web_client_headers(cookie),
+    }
     api_url = f"{BASE_URL}/api/feed/?ids={ids}"
     response = await fetch(api_url, headers, method="GET")
     return response
@@ -164,6 +226,42 @@ async def get_lyrics(lid, token):
     return await fetch(api_url, headers, method="GET")
 
 
+async def request_wav_convert(clip_id, token, cookie=None):
+    """Start the suno.com Download .wav job. 2xx body may be empty."""
+    cookie = cookie if cookie is not None else os.getenv("COOKIE", "")
+    headers = {
+        **_auth_headers(token, cookie=cookie),
+        **web_client_headers(cookie),
+    }
+    api_url = f"{BASE_URL.rstrip('/')}/api/gen/{clip_id}/convert_wav/"
+    logger.info(
+        "Suno WAV convert clip_id=%s has_device_id=%s",
+        clip_id,
+        bool(device_id(cookie)),
+    )
+    return await fetch(api_url, headers, method="POST")
+
+
+async def get_wav_file(clip_id, token, cookie=None):
+    """Pending render is None; ready payload has wav_file_url."""
+    cookie = cookie if cookie is not None else os.getenv("COOKIE", "")
+    headers = {
+        **_auth_headers(token, cookie=cookie),
+        **web_client_headers(cookie),
+    }
+    api_url = f"{BASE_URL.rstrip('/')}/api/gen/{clip_id}/wav_file/"
+    return await fetch(api_url, headers, method="GET", not_found_as_none=True)
+
+
+def wav_file_url(payload):
+    if not isinstance(payload, dict):
+        return ""
+    value = payload.get("wav_file_url")
+    if isinstance(value, dict):
+        value = value.get("url") or value.get("wav_file_url")
+    return str(value or "").strip()
+
+
 async def get_credits(token):
     if not token:
         raise RuntimeError("Suno authentication token is not available")
@@ -179,12 +277,21 @@ async def get_credits(token):
 
 
 def _auth_headers(token, cookie=""):
+    """Bearer (+ Cookie). A minted device-id/browser-token pair fails generate; those go on feed/CDN only."""
     if not token:
         raise RuntimeError("Suno authentication token is not available")
     headers = {"Authorization": f"Bearer {token}"}
     if cookie:
         headers["Cookie"] = cookie
     return headers
+
+
+def _cookie_value(cookie, name):
+    for part in str(cookie or "").split(";"):
+        key, separator, value = part.strip().partition("=")
+        if separator and key == name:
+            return value.strip()
+    return ""
 
 
 def _cookie_names(cookie):
