@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: shortform
+      POSTGRES_USER: shortform
+      POSTGRES_PASSWORD: shortform_local
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "PGPASSWORD=$$POSTGRES_PASSWORD psql -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB -Atqc 'SELECT 1'"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - shortform_db:/var/lib/postgresql/data
+volumes:
+  shortform_db:

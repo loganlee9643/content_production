@@ -1,0 +1,16 @@
+* { box-sizing: border-box; }
+body { margin: 0; background: #f6f4ef; color: #252622; font-family: system-ui, sans-serif; }
+main { max-width: 1080px; margin: auto; padding: 36px 20px; }
+header, .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+header { justify-content: space-between; }
+a { color: #38594b; }
+.panel { padding: 20px; background: white; border: 1px solid #deded4; border-radius: 12px; margin-bottom: 16px; }
+h2 { margin-top: 0; }
+label { display: block; margin: 12px 0; }
+input, textarea { display: block; width: 100%; padding: 10px; margin-top: 6px; border: 1px solid #8e9188; border-radius: 6px; font: inherit; }
+textarea { min-height: 90px; }
+button { border: 0; border-radius: 6px; background: #38594b; color: white; padding: 10px 15px; font: inherit; cursor: pointer; }
+button:disabled { opacity: .6; cursor: wait; }
+iframe { display: block; width: min(100%, 360px); height: 560px; margin-top: 16px; border: 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 16px; }
+p { white-space: pre-wrap; overflow-wrap: anywhere; }

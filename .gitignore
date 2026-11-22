@@ -1,7 +1,18 @@
+# Python environments and caches
 .venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Node.js dependencies and Next.js build output
+node_modules/
+.next/
+*.tsbuildinfo
+/apps/web/.env
+/apps/web/.env.*
+!/apps/web/.env.example
+
+# Local logs and work files
 logs/
 logs copy/
 _session_project/

@@ -1,0 +1,5 @@
+# Local backend configuration and database
+/config.yaml
+/.production-media/
+/.tools/
+/shortform.local.sqlite3

@@ -1,0 +1,35 @@
+database:
+  host: 127.0.0.1
+  port: 5432
+  bootstrap: false
+  admin:
+    name: postgres
+    user: postgres
+    password: ""
+  user:
+    name: shortform
+    user: shortform
+    password: ""
+
+instagram:
+  graph_version: v27.0
+  user_id: ""
+  access_token: ""
+
+collection:
+  interval_hours: 6
+
+video_analysis:
+  api_key: ""
+  model: gemini-3.8-flash
+
+video_production:
+  model: gemini-omni-1.2-flash
+  api_key: ""
+  storage_dir: .production-media
+  ffmpeg: ffmpeg
+  ffprobe: ffprobe
+
+character_image:
+  model: gemini-3.1-flash-image
+  api_key: ""
