@@ -45,3 +45,24 @@ npm ci
 - 백엔드 `http://127.0.0.1:8001`
 
 다음부터는 실행 배치만 열면 됩니다. 배치가 백엔드 가상환경의 Python을 직접 사용합니다.
+
+## PostgreSQL 데이터를 다른 서버로 옮기기
+
+출발지와 대상에서 숏폼 백엔드와 수집 워커를 멈춥니다. 특히 진행 중인 영상 생성은 완료한 뒤 중지해야 합니다. 아래 명령은 저장소 루트에서 실행하며, `shortform`은 데이터베이스와 계정 이름 예시입니다.
+
+1. 출발지에서 PostgreSQL 백업 파일을 만듭니다.
+
+   ```powershell
+   python scripts/migrate_shortform_postgres.py backup shortform.dump --host 127.0.0.1 --database shortform --user shortform
+   ```
+
+2. 대상 PostgreSQL 서버에 앱 계정을 만들고, 그 계정이 소유하는 **빈 데이터베이스**를 준비합니다. 백업 파일을 옮겨 아래 명령을 실행합니다. 대상 서버에 네트워크로 접속할 수 있다면 출발지에서 바로 실행해도 됩니다.
+
+   ```powershell
+   python scripts/migrate_shortform_postgres.py restore shortform.dump --host DESTINATION_HOST --database shortform --user shortform
+   ```
+
+3. 영상도 이전하려면 출발지의 `video_production.storage_dir` 폴더 전체를 대상 백엔드의 저장 폴더에 복사합니다. 기본값은 `apps/backend/.production-media`입니다. UUID로 된 MP4 파일 이름을 유지합니다.
+4. 대상 백엔드의 `apps/backend/config.yaml`에 새 PostgreSQL 접속 정보와 동영상 저장 경로를 입력한 뒤 서비스를 실행합니다. 기존 레퍼런스와 프로젝트, 영상 재생이 정상인지 확인합니다.
+
+PostgreSQL 클라이언트 도구가 PATH에 없으면 두 명령에 `--bin-dir "C:\Program Files\PostgreSQL\bin"`을 추가합니다. `pg_dump`는 출발지 서버와 같은 메이저 버전 이상을 사용하고, 대상 서버는 출발지와 같거나 더 최신 버전을 사용합니다. 암호는 PostgreSQL 도구가 요청할 때 입력합니다. 복원은 한 트랜잭션으로 진행되며, 기존 테이블을 삭제하거나 서버의 계정과 권한을 복제하지 않습니다.
